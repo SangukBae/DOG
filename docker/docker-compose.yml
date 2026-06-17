@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  clab_imu_labeling:
+    build: .
+    container_name: clab_imu_labeling
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ../workspace:/workspace
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: sleep infinity

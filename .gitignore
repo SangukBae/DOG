@@ -1,0 +1,30 @@
+# ─── Data (sensor CSV / video / generated outputs) ───────────────
+# Raw dataset directories (date-named: e.g. 260514, 260531 ...)
+/workspace/2[0-9][0-9][0-9][0-9][0-9]/
+/workspace/test_data/
+
+# Pipeline outputs (labeled csv, viewer html, review exports)
+/workspace/outputs/
+
+# Data / media files anywhere
+*.csv
+*.mp4
+
+# Model weights & preprocessing artifacts
+*.pt
+*.pth
+*.pkl
+# ...except the small scaler / label encoder needed to run inference
+!/workspace/preprocessed/scaler.pkl
+!/workspace/preprocessed/label_encoder.pkl
+
+# ─── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# ─── OS / misc ───────────────────────────────────────────────────
+desktop.ini
+.DS_Store
+Thumbs.db
