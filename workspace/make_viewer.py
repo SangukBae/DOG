@@ -466,9 +466,6 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgro
 .btn-save:hover{{background:#18856A}}
 .btn-help{{background:#1a1a2e;border-color:#4455aa;color:#99aaff}}
 .btn-help:hover{{background:#1e2040;border-color:#99aaff;color:#ccddff}}
-.offset-group{{display:flex;align-items:center;gap:5px}}
-.offset-group label{{font-size:11px;color:var(--text3)}}
-.offset-group input{{background:#111;border:1px solid var(--border2);color:var(--text);border-radius:5px;padding:4px 7px;font-size:12px;width:72px}}
 .mod-counter{{font-size:12px;color:var(--text2);margin-left:auto;display:flex;align-items:center;gap:6px}}
 .mod-badge{{background:#2a1a00;border:1px solid #7a5000;color:#ffaa33;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600}}
 .mod-badge.zero{{background:var(--bg3);border-color:var(--border2);color:var(--text3)}}
@@ -649,12 +646,6 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
   <span class="logo">오토 레이블링 검수 뷰어</span>
   <div class="timecode" id="tcDisp">00:00:00.000</div>
   <div class="tb-sep"></div>
-  <div class="offset-group">
-    <label>오프셋(ms)</label>
-    <input type="number" id="offsetInp" value="{offset_ms}" step="10">
-    <button class="btn" onclick="applyOffset()">적용</button>
-  </div>
-  <div class="tb-sep"></div>
   <button class="btn btn-warn" onclick="jumpLowConf()">⚠ 다음 검수필요 ({low_conf_count})</button>
   <button class="btn btn-audio" id="nextAudioBtn" onclick="jumpNextAudio()">🔊 다음 Barking 구간</button>
   <button class="btn" onclick="undoLast()">↩ 되돌리기</button>
@@ -714,7 +705,6 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
           <span style="font-size:10px;color:#888;font-weight:600;min-width:36px">AUDIO</span>
           <canvas id="globalLevelMeter" width="120" height="18" style="border-radius:3px;flex-shrink:0"></canvas>
-          <span id="audioEventCount" style="font-size:10px;color:#ff9d3a;margin-left:4px"></span>
           <span id="audioSelectedRange" onclick="applyAudioRangeToInputs()" style="font-size:10px;color:#fff;background:#1a1a1a;padding:2px 8px;border-radius:3px;margin-left:4px;display:none;cursor:pointer;border:1px solid #444" title="클릭하면 시작/종료 시간에 채워짐"></span>
           <span style="font-size:9px;color:#555;margin-left:auto">← 지나감&nbsp;&nbsp;|&nbsp;&nbsp;현재&nbsp;&nbsp;|&nbsp;&nbsp;다가옴 →</span>
         </div>
@@ -992,7 +982,6 @@ Object.defineProperty(window, 'history', {{
   set: (v) => {{ cur().history = v; }}
 }});
 
-let offsetMs   = {offset_ms};
 let zoomIdx    = 6;
 let zoomLevel  = 5;
 
@@ -1167,9 +1156,6 @@ document.addEventListener('DOMContentLoaded', () => {{
   // 서버 분석 dB 타임라인/소리 구간이 있으면 바로 렌더링
   if (audioTimeline.length > 0 || audioEvents.length > 0) {{
     renderAudioTier();
-    if (audioEvents.length > 0) {{
-      document.getElementById('nextAudioBtn').style.display = 'inline-flex';
-    }}
     console.log('오디오 분석 로드 완료: 구간', audioEvents.length, '개, 타임라인', audioTimeline.length, '개');
   }}
 }});
@@ -1197,7 +1183,6 @@ function initAudio() {{
     audioSource = audioCtx.createMediaElementSource(vid);
     audioSource.connect(analyser);
     analyser.connect(audioCtx.destination);
-    document.getElementById('nextAudioBtn').style.display = 'inline-flex';
   }} catch(e) {{ console.warn('Web Audio 초기화 실패:', e); }}
 }}
 
@@ -1235,8 +1220,6 @@ function dbToColor(db) {{
 }}
 
 function renderAudioTier() {{
-  const countEl = document.getElementById('audioEventCount');
-  if (countEl) countEl.textContent = '';
   drawAudioTrain();
 
   // 캔버스 클릭 → 클릭 위치의 시간으로 이동 + 해당 막대 구간 표시
@@ -1862,7 +1845,6 @@ function jumpLowConf(){{
   if(next){{vid.currentTime=next.start_ms/1000;selectSeg(tier2Segs.indexOf(next));setFeedback(`⚠ ${{next.label}} conf:${{next.conf}}`,'var(--red)');}}
   else setFeedback('검수 필요 구간 없음 ✓','var(--green)');
 }}
-function applyOffset(){{offsetMs=parseFloat(document.getElementById('offsetInp').value)||0;setFeedback(`오프셋: ${{offsetMs}}ms`,'#888');}}
 function setFeedback(msg,color){{feedbk.textContent=msg;feedbk.style.color=color;}}
 
 // ── 도움말 모달 ──────────────────────────────────────────────────────────
