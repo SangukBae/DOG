@@ -204,7 +204,8 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
 .container{{max-width:960px;margin:0 auto;padding:32px 24px}}
 
 /* 업로드 섹션 */
-.upload-box{{background:#161616;border:2px dashed #333;border-radius:12px;padding:28px;margin-bottom:32px}}
+.upload-box{{background:#161616;border:2px dashed #333;border-radius:12px;padding:28px;margin-bottom:32px;transition:border-color 0.15s,background 0.15s}}
+.upload-box.dragover{{border-color:#378ADD;background:#10243a}}
 .upload-title{{font-size:14px;font-weight:700;margin-bottom:16px;color:#eee}}
 .upload-row{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}}
 .file-label{{display:flex;flex-direction:column;gap:6px}}
@@ -242,8 +243,8 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
 <div class="container">
 
   <!-- 파이프라인 실행 -->
-  <div class="upload-box">
-    <div class="upload-title">새 파일 검수 시작</div>
+  <div class="upload-box" id="uploadBox">
+    <div class="upload-title">새 파일 검수 시작 <span style="font-size:11px;color:#555;font-weight:400">— 파일을 끌어다 놓아도 됩니다</span></div>
     <div class="upload-row">
       <div class="file-label">
         <span>센서 CSV</span>
@@ -346,6 +347,47 @@ async function refreshFileList() {{
     if (fresh) document.getElementById('fileList').innerHTML = fresh.innerHTML;
   }} catch(e) {{}}
 }}
+
+// ── 드래그&드롭 업로드 ────────────────────────────────────────────────────
+// 떨어뜨린 파일을 확장자로 분류해 센서(.csv)/영상(나머지) input에 채운다.
+function assignDropped(files) {{
+  let sensorSet = false, videoSet = false;
+  for (const f of files) {{
+    const isCsv = f.name.toLowerCase().endsWith('.csv');
+    const target = isCsv ? 'sensorFile' : 'videoFile';
+    if (isCsv ? sensorSet : videoSet) continue;
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    document.getElementById(target).files = dt.files;
+    if (isCsv) sensorSet = true; else videoSet = true;
+  }}
+  const prog = document.getElementById('progress');
+  if (sensorSet || videoSet) {{
+    prog.style.display = 'block';
+    prog.className = 'progress';
+    prog.textContent = '선택됨: ' +
+      [sensorSet ? '센서 CSV' : null, videoSet ? '영상' : null].filter(Boolean).join(', ') +
+      ' — ▶ 버튼을 누르세요.';
+  }}
+}}
+
+const _uploadBox = document.getElementById('uploadBox');
+['dragenter','dragover'].forEach(ev => _uploadBox.addEventListener(ev, e => {{
+  e.preventDefault(); e.stopPropagation();
+  _uploadBox.classList.add('dragover');
+}}));
+['dragleave','drop'].forEach(ev => _uploadBox.addEventListener(ev, e => {{
+  e.preventDefault(); e.stopPropagation();
+  if (ev === 'dragleave' && _uploadBox.contains(e.relatedTarget)) return;
+  _uploadBox.classList.remove('dragover');
+}}));
+_uploadBox.addEventListener('drop', e => {{
+  if (e.dataTransfer && e.dataTransfer.files.length) assignDropped(e.dataTransfer.files);
+}});
+// 페이지 전체로 떨어뜨렸을 때 브라우저가 파일을 열어버리는 기본 동작 방지
+['dragover','drop'].forEach(ev => window.addEventListener(ev, e => {{
+  if (!_uploadBox.contains(e.target)) e.preventDefault();
+}}));
 </script>
 </body>
 </html>'''
