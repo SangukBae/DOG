@@ -7,6 +7,7 @@ FastAPI 기반 내부망 검수 플랫폼
 접속: http://서버IP:8888
 """
 import os
+import sys
 import json
 import subprocess
 from datetime import datetime
@@ -18,16 +19,68 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+sys.path.append('/workspace')
+# 코덱 확인/변환 로직은 make_viewer와 공유 (중복 제거)
+from make_viewer import get_video_codec, convert_to_h264
+
 app = FastAPI(title="오토 레이블링 검수 서버")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# 내부망 도구지만 쓰기 API가 있으므로 CORS는 동일 출처만 허용(필요 시 환경변수로 확장)
+_ALLOWED = [o for o in os.environ.get('ALLOW_ORIGINS', '').split(',') if o]
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED, allow_methods=["*"], allow_headers=["*"])
 
 WORKSPACE     = Path('/workspace')
 OUTPUTS_DIR   = WORKSPACE / 'outputs'
 TEST_DATA_DIR = WORKSPACE / 'test_data'
+VIDEO_MAP_FILE = OUTPUTS_DIR / '.video_map.json'   # 재시작 후에도 센서↔영상 매핑 유지
 
 # 파이프라인 실행 상태 추적
-pipeline_status = {}  # {job_id: {status, message, viewer_url}}
-video_map = {}        # {sensor_base: video_filename}
+pipeline_status = {}      # {job_id: {status, message, viewer_url}}  (휘발성)
+MAX_STATUS_ENTRIES = 200  # 무한 증가 방지
+
+
+def _prune_status():
+    """오래된 job 상태를 제거해 메모리 무한 증가 방지."""
+    if len(pipeline_status) > MAX_STATUS_ENTRIES:
+        for k in list(pipeline_status)[:-MAX_STATUS_ENTRIES]:
+            pipeline_status.pop(k, None)
+
+
+def _load_video_map():
+    try:
+        if VIDEO_MAP_FILE.exists():
+            return json.loads(VIDEO_MAP_FILE.read_text(encoding='utf-8'))
+    except Exception as e:
+        print(f"[video_map 로드 실패] {e}")
+    return {}
+
+
+def _save_video_map():
+    try:
+        OUTPUTS_DIR.mkdir(exist_ok=True)
+        VIDEO_MAP_FILE.write_text(json.dumps(video_map, ensure_ascii=False), encoding='utf-8')
+    except Exception as e:
+        print(f"[video_map 저장 실패] {e}")
+
+
+video_map = _load_video_map()   # {sensor_base: video_filename} — 디스크에서 복원
+
+
+def safe_under(base_dir: Path, name: str) -> Path:
+    """사용자 입력 파일명을 base_dir 안으로 강제(경로 탈출 방지).
+    디렉터리 성분을 제거하고, resolve 결과가 base_dir 내부인지 검증."""
+    candidate = (base_dir / Path(name).name).resolve()
+    base = base_dir.resolve()
+    if base not in candidate.parents and candidate != base:
+        raise HTTPException(400, '잘못된 파일명')
+    return candidate
+
+
+def safe_base(name: str) -> str:
+    """f-string 보간용 base 식별자에서 경로 구분자/.. 제거."""
+    clean = Path(name).name
+    if not clean or clean in ('.', '..'):
+        raise HTTPException(400, '잘못된 이름')
+    return clean
 
 
 def get_file_list():
@@ -75,8 +128,8 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
             r_pp = subprocess.run([
                 'python', '/workspace/postprocess.py',
                 '--input',         str(label_out),
-                '--min-duration',   '1.0',
-                '--smooth-window',  '0.5',
+                '--min-duration',   '2.0',
+                '--smooth-window',  '1.0',
                 '--protect-conf',   '0.85',
                 '--video',          str(video_path),
                 '--audio-db-margin', str(audio_db_margin),
@@ -306,43 +359,48 @@ async def upload(background_tasks: BackgroundTasks,
                  audio_db_margin: float = Form(12)):
     """파일 업로드 + 파이프라인 백그라운드 실행"""
     try:
-        # 파일 저장
-        sensor_path = TEST_DATA_DIR / sensor.filename
-        video_path  = TEST_DATA_DIR / video.filename
+        # 파일 저장 (경로 탈출 방지: 업로드 파일명은 base_dir 안으로 강제)
         TEST_DATA_DIR.mkdir(exist_ok=True)
+        sensor_path = safe_under(TEST_DATA_DIR, sensor.filename or 'sensor.csv')
+        video_path  = safe_under(TEST_DATA_DIR, video.filename or 'video.mp4')
 
         with open(sensor_path, 'wb') as f:
             f.write(await sensor.read())
         with open(video_path, 'wb') as f:
             f.write(await video.read())
 
-        # 코덱 확인 및 H.264 변환
-        codec = subprocess.run(
-            ['/usr/bin/ffprobe','-v','error','-select_streams','v:0',
-             '-show_entries','stream=codec_name',
-             '-of','default=noprint_wrappers=1:nokey=1', str(video_path)],
-            capture_output=True, text=True).stdout.strip()
-
-        if codec == 'hevc':
-            h264_path = TEST_DATA_DIR / video.filename.replace('.mp4', '_h264.mp4')
-            subprocess.run([
-                '/usr/bin/ffmpeg', '-y', '-i', str(video_path),
-                '-vcodec', 'libx264', '-crf', '23', '-preset', 'fast',
-                '-acodec', 'aac', str(h264_path)
-            ], check=True, capture_output=True)
-            video_path = h264_path
-            print(f"hevc → H.264 변환 완료: {h264_path.name}")
-
-        # 센서-영상 매핑 저장
-        sensor_base = sensor_path.stem
-        video_map[sensor_base] = video_path.name
-
-        # 파일 종류 자동 감지 (reviewed CSV인지 원본 센서 CSV인지)
+        # 업로드 센서 CSV 컬럼 검증 (백그라운드 깊은 곳에서 터지지 않게 조기 차단)
         import pandas as _pd
-        label_path = None
         try:
             df_check = _pd.read_csv(sensor_path, nrows=1)
-            if 'pred_label' in df_check.columns:
+        except Exception as e:
+            return JSONResponse({'error': f'CSV 읽기 실패: {e}'}, status_code=400)
+        cols = set(df_check.columns)
+        if 'timestamp' not in cols:
+            return JSONResponse({'error': "CSV에 'timestamp' 컬럼이 없습니다."}, status_code=400)
+        is_reviewed = 'pred_label' in cols
+        if not is_reviewed:
+            accel_ok = {'accel_x', 'accel_y', 'accel_z'} <= cols or {'acc_x', 'acc_y', 'acc_z'} <= cols
+            gyro_ok  = {'gyro_x', 'gyro_y', 'gyro_z'} <= cols
+            if not (accel_ok and gyro_ok):
+                return JSONResponse(
+                    {'error': '센서 CSV에 accel_x/y/z, gyro_x/y/z 컬럼이 필요합니다. '
+                              f'현재: {sorted(cols)}'}, status_code=400)
+
+        # 코덱 확인 및 H.264 변환 (make_viewer와 공유 로직)
+        if get_video_codec(video_path) == 'hevc':
+            video_path = Path(convert_to_h264(video_path))
+            print(f"hevc → H.264 변환 완료: {video_path.name}")
+
+        # 센서-영상 매핑 저장 (디스크 영속화 → 재시작 후에도 영상 탐색 가능)
+        sensor_base = sensor_path.stem
+        video_map[sensor_base] = video_path.name
+        _save_video_map()
+
+        # 파일 종류 자동 감지 (reviewed CSV인지 원본 센서 CSV인지)
+        label_path = None
+        try:
+            if is_reviewed:
                 # reviewed CSV를 올린 경우 → label로 사용, 오토레이블링 스킵
                 label_path = sensor_path
                 ts_match = re.search(r'(\d{8}_\d{6})', sensor_path.stem)
@@ -353,12 +411,14 @@ async def upload(background_tasks: BackgroundTasks,
                     if orig:
                         sensor_path = orig
                         video_map[orig.stem] = video_path.name
+                        _save_video_map()
                 print(f"레이블 CSV 감지: {label_path.name} → 오토레이블링 스킵")
         except Exception:
             pass
 
         # 파이프라인 백그라운드 실행
-        job_id = f"{sensor.filename}_{datetime.now().strftime('%H%M%S')}"
+        job_id = f"{safe_base(sensor.filename or 'job')}_{datetime.now().strftime('%H%M%S')}"
+        _prune_status()
         pipeline_status[job_id] = {'status': 'running', 'message': '시작 중...', 'viewer_url': None}
         background_tasks.add_task(run_pipeline, job_id, sensor_path, video_path, label_path, threshold, audio_db_margin)
 
@@ -378,7 +438,8 @@ async def status(job_id: str):
 @app.get('/viewer/{filename}', response_class=HTMLResponse)
 async def viewer(filename: str):
     """뷰어 HTML 반환 (영상 스트리밍 URL로 교체)"""
-    path = OUTPUTS_DIR / filename
+    filename = Path(filename).name
+    path = safe_under(OUTPUTS_DIR, filename)
     if not path.exists():
         raise HTTPException(404, '파일 없음')
 
@@ -387,7 +448,7 @@ async def viewer(filename: str):
     # 영상 파일 찾기 (매핑 우선, 없으면 날짜 패턴으로 찾기)
     sensor_base = filename.replace('_viewer.html', '').replace('_labeled', '')
     if sensor_base in video_map:
-        video = TEST_DATA_DIR / video_map[sensor_base]
+        video = TEST_DATA_DIR / Path(video_map[sensor_base]).name
         if not video.exists():
             video = None
     else:
@@ -407,7 +468,7 @@ async def viewer(filename: str):
         )
 
     # CSV 저장을 서버로 (stats 선언 이후 교체)
-    base = filename.replace('_viewer.html', '')
+    base = safe_base(filename.replace('_viewer.html', ''))
     old_save = "hideSaveModal();\n  setFeedback(`\u2713 \uc800\uc7a5 \uc644\ub8cc: ${finalName}`,'var(--green)');\n}"
     new_save = (
         f"fetch('/save/{base}', {{\n"
@@ -435,7 +496,7 @@ async def viewer(filename: str):
 @app.get('/video/{filename}')
 async def stream_video(filename: str, request: Request):
     """영상 스트리밍 (Range 요청 지원)"""
-    path = TEST_DATA_DIR / filename
+    path = safe_under(TEST_DATA_DIR, filename)
     if not path.exists():
         raise HTTPException(404, '영상 없음')
 
@@ -481,6 +542,7 @@ async def stream_video(filename: str, request: Request):
 async def autosave(base: str, request: Request):
     """30초마다 자동저장 — reviewed CSV 덮어씀"""
     try:
+        base = safe_base(base)
         data = await request.json()
         csv  = data.get('csv', '')
         path = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
@@ -493,9 +555,22 @@ async def autosave(base: str, request: Request):
 @app.get('/save/{base}')
 async def get_save(base: str):
     """저장된 reviewed CSV 존재 여부 확인"""
+    base = safe_base(base)
     path = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
     if path.exists():
         return JSONResponse({'exists': True, 'size': path.stat().st_size,
+                             'updated': path.stat().st_mtime})
+    return JSONResponse({'exists': False})
+
+
+@app.get('/load/{base}')
+async def load_reviewed(base: str):
+    """저장된 reviewed CSV 내용 반환 — 뷰어 재진입 시 자동 복원용"""
+    base = safe_base(base)
+    path = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
+    if path.exists():
+        return JSONResponse({'exists': True,
+                             'csv': path.read_text(encoding='utf-8'),
                              'updated': path.stat().st_mtime})
     return JSONResponse({'exists': False})
 
@@ -504,6 +579,7 @@ async def get_save(base: str):
 async def save_result(base: str, request: Request):
     """검수 결과 서버에 저장"""
     try:
+        base = safe_base(base)
         data = await request.json()
         (OUTPUTS_DIR / f'{base}_labeled_reviewed.csv').write_text(data.get('csv',''), encoding='utf-8')
         (OUTPUTS_DIR / f'{base}_review_stats.json').write_text(
