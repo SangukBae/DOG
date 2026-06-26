@@ -22,12 +22,27 @@ OUTPUT_DIR        = '/workspace/outputs'
 CONFIDENCE_THRESH = 0.7
 
 
+# 우선순위가 높은 표준 weight 파일명 (mtime보다 먼저 본다)
+PREFERRED_MODELS = ['mstcnpp_best.pt', 'best.pt']
+
+
 def find_model_path():
-    """models/ 폴더에서 사용할 weight 파일 자동 감지"""
+    """models/ 폴더에서 사용할 weight 파일 선택.
+
+    파일 mtime은 `touch`나 복사만으로도 바뀌어 엉뚱한 모델이 선택될 수 있으므로,
+    먼저 표준 파일명(mstcnpp_best.pt 등)을 찾고, 없을 때만 최신 .pt로 폴백한다.
+    """
     import glob
     models_dir = MODELS_DIR
 
-    # 1. 가장 최신 .pt 파일 선택
+    # 1. 표준 파일명 우선
+    for name in PREFERRED_MODELS:
+        cand = os.path.join(models_dir, name)
+        if os.path.exists(cand):
+            print(f"[모델 선택] {name} (표준 파일명)")
+            return cand
+
+    # 2. 폴백: 가장 최신 .pt 파일
     pt_files = sorted(
         glob.glob(os.path.join(models_dir, '*.pt')),
         key=os.path.getmtime,
@@ -39,7 +54,7 @@ def find_model_path():
     selected = pt_files[0]
     print(f"[모델 자동 감지] {os.path.basename(selected)}")
     if len(pt_files) > 1:
-        print(f"  (후보 {len(pt_files)}개 중 최신 파일 선택)")
+        print(f"  (표준 파일명 없음 → 후보 {len(pt_files)}개 중 최신 파일 선택)")
     return selected
 
 COL_MAP = {
@@ -64,7 +79,13 @@ def load_model(device):
         le = pickle.load(f)
 
     model_path = find_model_path()
-    ckpt       = torch.load(model_path, map_location=device)
+    # weights_only=True 로 안전 로드 (pickle 임의코드 실행 차단 + 향후 torch 기본값 변경 대비).
+    # 구버전 torch나 비표준 체크포인트는 미지원일 수 있어 폴백.
+    try:
+        ckpt = torch.load(model_path, map_location=device, weights_only=True)
+    except Exception as e:
+        print(f"⚠ weights_only 로드 실패 → 일반 로드로 폴백 ({e})")
+        ckpt = torch.load(model_path, map_location=device, weights_only=False)
     model_name = ckpt.get('model_name', 'mstcnpp')
     model_hz   = ckpt.get('sampling_rate', 100)  # 없으면 100Hz 가정
 
@@ -105,7 +126,17 @@ def load_model(device):
     print(f"로드 완료 (epoch {ckpt['epoch']}, val_acc: {ckpt['val_acc']:.4f})")
     print(f"모델 학습 Hz: {model_hz}Hz, SEQ_LEN: {seq_len}")
     print(f"클래스: {list(le.classes_)}")
-    return model, scaler, le, model_hz, seq_len
+    return model, scaler, le, model_hz, seq_len, model_name
+
+
+def infer_full(X, model, device):
+    """전체 시퀀스를 한 번에 추론 (fully-convolutional MS-TCN++ 전용).
+    윈도우 경계 아티팩트가 없다. 메모리 부족 시 호출부에서 윈도우 추론으로 폴백."""
+    with torch.no_grad():
+        x      = torch.tensor(X.T).unsqueeze(0).to(device)   # (1, C, T)
+        output = model(x)[-1]
+        probs  = F.softmax(output, dim=1).squeeze(0).T.cpu().numpy()
+    return probs
 
 
 def infer(X, model, device, seq_len, num_classes):
@@ -133,7 +164,7 @@ def auto_label(input_path, threshold):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    model, scaler, le, model_hz, seq_len = load_model(device)
+    model, scaler, le, model_hz, seq_len, model_name = load_model(device)
     num_classes = len(le.classes_)
 
     df = pd.read_csv(input_path)
@@ -173,7 +204,20 @@ def auto_label(input_path, threshold):
         X = scaler.transform(X_df)
 
     print("\n추론 중...")
-    all_probs   = infer(X, model, device, seq_len, num_classes)
+    # MS-TCN++은 fully-convolutional이라 전체 시퀀스 1패스가 가능(윈도우 경계 아티팩트 없음).
+    # 메모리 부족 시 윈도우 추론으로 폴백. BiLSTM은 학습 seq_len 분포를 따르도록 윈도우 유지.
+    all_probs = None
+    if model_name != 'bilstm':
+        try:
+            all_probs = infer_full(X, model, device)
+            print(f"  전체 시퀀스 1패스 추론 ({len(X):,} 프레임)")
+        except RuntimeError as e:
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            print(f"  ⚠ 1패스 추론 실패({type(e).__name__}) → 윈도우 추론으로 폴백")
+            all_probs = None
+    if all_probs is None:
+        all_probs = infer(X, model, device, seq_len, num_classes)
     confidence  = all_probs.max(axis=1)
     pred_idx    = all_probs.argmax(axis=1)
     pred_labels = le.inverse_transform(pred_idx).astype(object)
