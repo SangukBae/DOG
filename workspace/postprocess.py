@@ -30,6 +30,33 @@ def detect_hz(df):
     return round(1000 / iv), iv
 
 
+def auto_audio_offset(df, video_path):
+    """센서 시작 시각과 영상 시작 시각의 차이(ms)를 자동 추정.
+
+    뷰어(make_viewer)는 파일명 타임스탬프로 영상↔센서를 정렬하지만, 기존
+    Barking 덮어쓰기는 offset=0(센서 시작==영상 시작)으로 가정해 두 정렬이
+    어긋났다. 여기서 같은 기준으로 offset을 맞춘다.
+
+    반환값 정의: apply_audio_barking 의 `vid_time = rel - audio_offset_ms` 에서
+        audio_offset_ms = video_start_wall - sensor_start_wall
+    (센서 timestamp는 epoch ms, 영상 시작은 파일명 YYYYMMDD_HHMMSS 에서 추출).
+    타임스탬프를 못 구하면 0(=동시 시작 가정)으로 폴백한다.
+    """
+    try:
+        from make_viewer import extract_ts  # 파일명→epoch ms (뷰어와 동일 로직 재사용)
+    except Exception:
+        return 0
+    video_start = extract_ts(os.path.basename(str(video_path)))
+    if video_start is None:
+        print("  영상 파일명에 타임스탬프 없음 → offset 0(동시 시작) 가정")
+        return 0
+    sensor_start = int(df['timestamp'].iloc[0])
+    offset = video_start - sensor_start
+    print(f"  자동 오디오 offset: {offset:+d}ms "
+          f"(센서시작 {sensor_start}, 영상시작 {video_start})")
+    return offset
+
+
 def segments(labels):
     """연속 동일 라벨 구간을 [(start, end)] (end exclusive) 로 반환"""
     n = len(labels)
@@ -70,21 +97,21 @@ def merge_short(labels, conf, min_len, protect_conf):
         segs = segments(labels)
         if len(segs) <= 1:
             break
-        # 길이 오름차순으로 가장 짧은 후보부터 처리
+        # 길이 오름차순으로 가장 짧은 후보부터 처리.
+        # seg의 위치(idx)를 함께 저장해 segs.index() 선형탐색(→전체 O(n²))을 제거.
         seg_info = []
-        for s, e in segs:
+        for idx, (s, e) in enumerate(segs):
             length = e - s
             avg_c = conf[s:e].mean()
-            seg_info.append((length, avg_c, s, e))
+            seg_info.append((length, avg_c, s, e, idx))
         seg_info.sort(key=lambda x: (x[0], x[1]))
 
         changed = False
-        for length, avg_c, s, e in seg_info:
+        for length, avg_c, s, e, idx in seg_info:
             if length >= min_len:
                 break  # 이보다 긴 구간은 더 볼 필요 없음
             if avg_c >= protect_conf:
                 continue  # 짧지만 확신이 강함 → 실제 행동으로 보존
-            idx = segs.index((s, e))
             left = segs[idx - 1] if idx > 0 else None
             right = segs[idx + 1] if idx < len(segs) - 1 else None
             cand = []
@@ -106,8 +133,10 @@ def merge_short(labels, conf, min_len, protect_conf):
 def apply_audio_barking(df, video_path, audio_offset_ms, threshold_db,
                         min_dur_ms, bark_label, db_margin):
     """영상 오디오에서 '소리가 큰 구간'을 찾아 해당 센서 프레임을 Barking으로 덮어쓴다.
-    영상 상대시간(ms) == 센서 시작 기준 상대시간(ms) 으로 정렬.
-    audio_offset_ms: 센서가 영상보다 X ms 늦으면 +X (미세조정용).
+    센서 프레임 → 영상 시간 매핑: vid_time = rel - audio_offset_ms
+    (rel = 센서 시작 기준 상대시간 ms).
+    audio_offset_ms = (영상시작 - 센서시작) ms. auto_audio_offset()로 자동 계산되며,
+    센서가 영상보다 늦게 시작하면 음수가 된다(영상이 이미 진행 중이므로).
     db_margin: 적응형 임계값 마진(배경+N dB). 클수록 큰 소리만 Barking."""
     from make_viewer import analyze_audio  # 기존 적응형 dB 분석 재사용
 
@@ -146,7 +175,7 @@ def apply_audio_barking(df, video_path, audio_offset_ms, threshold_db,
 
 
 def postprocess(input_path, min_duration, smooth_window, protect_conf,
-                video_path=None, audio_offset_ms=0, audio_threshold_db=None,
+                video_path=None, audio_offset_ms=None, audio_threshold_db=None,
                 audio_min_dur_ms=300, bark_label=BARK_LABEL, audio_db_margin=12,
                 use_algo=True, algo_locomotion=False, algo_swap_posture=False):
     df = pd.read_csv(input_path)
@@ -190,6 +219,9 @@ def postprocess(input_path, min_duration, smooth_window, protect_conf,
     # ── 오디오 기반 Barking 덮어쓰기 (가장 마지막, 권위적) ──
     if video_path:
         print(f"\n[오디오 Barking] {video_path}")
+        # offset 미지정(None)이면 센서/영상 시작 시각 차이를 자동 추정(뷰어와 동일 정렬)
+        if audio_offset_ms is None:
+            audio_offset_ms = auto_audio_offset(df, video_path)
         df, n_bark = apply_audio_barking(
             df, video_path, audio_offset_ms, audio_threshold_db,
             audio_min_dur_ms, bark_label, audio_db_margin)
@@ -226,8 +258,9 @@ if __name__ == '__main__':
     # ── 오디오 기반 Barking 덮어쓰기 ──
     p.add_argument('--video', default=None,
                    help='영상 경로. 지정 시 소리 큰 구간을 Barking으로 덮어씀')
-    p.add_argument('--audio-offset', type=int, default=0,
-                   help='센서가 영상보다 X ms 늦으면 +X (정렬 미세조정, 기본 0)')
+    p.add_argument('--audio-offset', type=int, default=None,
+                   help='audio_offset_ms = (영상시작 - 센서시작) ms. '
+                        '미지정 시 파일명/timestamp로 자동 추정(권장). 수동 미세조정용')
     p.add_argument('--audio-threshold-db', type=float, default=None,
                    help='소리 임계값 dB(절대값). 미지정 시 배경 노이즈 기준 적응형')
     p.add_argument('--audio-db-margin', type=float, default=12,
