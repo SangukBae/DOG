@@ -105,10 +105,6 @@ def extract_ts(fname):
     if m:
         return int(datetime.strptime(m.group(1)+m.group(2),'%Y%m%d%H%M%S').timestamp()*1000)
     return None
-    m = re.search(r'(\d{8})_(\d{6})', fname)
-    if m:
-        return int(datetime.strptime(m.group(1)+m.group(2),'%Y%m%d%H%M%S').timestamp()*1000)
-    return None
 
 def make_segments(df, conf_threshold=0.7, min_seg_ms=500):
     """
@@ -169,6 +165,7 @@ def analyze_audio(video_path, threshold_db=None, merge_gap_ms=1000, min_dur_ms=3
         print("librosa 미설치 → 오디오 분석 스킵")
         return empty
 
+    wav_path = None
     try:
         # ffmpeg으로 오디오 WAV 추출 (mono, 22050Hz)
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
@@ -181,7 +178,6 @@ def analyze_audio(video_path, threshold_db=None, merge_gap_ms=1000, min_dur_ms=3
 
         # librosa로 dB 분석
         y, sr = librosa.load(wav_path, sr=22050, mono=True)
-        os.unlink(wav_path)
 
         # 프레임 단위 RMS → dB 변환
         hop_length = 512  # ~23ms per frame
@@ -249,6 +245,13 @@ def analyze_audio(video_path, threshold_db=None, merge_gap_ms=1000, min_dur_ms=3
     except Exception as e:
         print(f"오디오 분석 실패: {e}")
         return empty
+    finally:
+        # 임시 WAV 정리 (librosa.load 등에서 예외가 나도 누수 방지)
+        if wav_path and os.path.exists(wav_path):
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
 
 
 def make_elan(sensor_path, label_path, video_path, output_html,
@@ -534,6 +537,8 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
 .seg-item.active{{background:var(--bg3);border-color:var(--border2)}}
 .seg-item.low-conf-item{{border-left:3px solid var(--red)!important}}
 .seg-item.modified-item{{border-left:3px solid white!important}}
+.seg-item.playing{{background:#13283d;box-shadow:inset 0 0 0 1px var(--blue)}}
+.seg-item.playing .seg-name::before{{content:'▶ ';color:var(--blue);font-size:9px;vertical-align:middle}}
 .seg-dot{{width:9px;height:9px;border-radius:3px;flex-shrink:0}}
 .seg-info{{flex:1;min-width:0}}
 .seg-name{{font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
@@ -651,7 +656,7 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
   </div>
   <div class="tb-sep"></div>
   <button class="btn btn-warn" onclick="jumpLowConf()">⚠ 다음 검수필요 ({low_conf_count})</button>
-  <button class="btn btn-audio" id="nextAudioBtn" onclick="jumpNextAudio()" style="display:none">🔊 다음 소리 구간</button>
+  <button class="btn btn-audio" id="nextAudioBtn" onclick="jumpNextAudio()">🔊 다음 Barking 구간</button>
   <button class="btn" onclick="undoLast()">↩ 되돌리기</button>
   <button class="btn btn-help" onclick="showHelp()">❓ 도움말</button>
   <div class="mod-counter">
@@ -852,7 +857,7 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
           </div>
           <div class="help-item">
             <div class="help-item-title"><span class="help-badge blue">⊕ 병합</span> 구간 합치기</div>
-            <div class="help-item-desc">선택한 구간과 바로 다음 구간의 레이블이 같으면 하나로 합칩니다.</div>
+            <div class="help-item-desc">선택한 구간을 기준으로 좌우로 이어진 같은 레이블 구간을 개수 제한 없이 한 번에 합칩니다.</div>
           </div>
           <div class="help-item">
             <div class="help-item-title"><span class="help-badge">줌</span> 타임라인 확대</div>
@@ -996,6 +1001,12 @@ const ZOOM_LEVELS = [0.5,0.75,1,1.5,2,3,5,8,12,16,24,32];
 // ── sentiment 폰트 색상 ───────────────────────────────────────────────────
 const G_POSITIVE = new Set(['Standing','Lying','Running','Walking','Sniffing','Eating','Drinking','Barking','Shaking']);
 const G_NEGATIVE = new Set(['Scratching','Licking','Vomiting','Coughing']);
+function getSentiment(label) {{
+  if(G_POSITIVE.has(label)) return 'Positive';
+  if(G_NEGATIVE.has(label)) return 'Negative';
+  if(label==='미분류') return 'Background';
+  return 'Positive';
+}}
 function getLabelTextColor(label) {{
   if(G_NEGATIVE.has(label)) return '#ff6b6b';  // 빨간색 (부정)
   if(label==='미분류')       return '#888888';  // 회색 (미분류)
@@ -1224,9 +1235,8 @@ function dbToColor(db) {{
 }}
 
 function renderAudioTier() {{
-  // 소리 구간 수 표시
   const countEl = document.getElementById('audioEventCount');
-  if (countEl) countEl.textContent = audioEvents.length > 0 ? (audioEvents.length + '개 소리 구간 감지') : '';
+  if (countEl) countEl.textContent = '';
   drawAudioTrain();
 
   // 캔버스 클릭 → 클릭 위치의 시간으로 이동 + 해당 막대 구간 표시
@@ -1307,19 +1317,6 @@ function drawAudioTrain() {{
     }});
     ctx.globalAlpha = 1;
   }}
-
-  // ── 감지된 소리 구간(주황) 강조 표시 ───────────────────────────
-  audioEvents.forEach(ev => {{
-    const dtStart = ev.start_ms - curMs;
-    const dtEnd   = ev.end_ms   - curMs;
-    if (dtEnd < -TRAIN_WINDOW_MS/2 || dtStart > TRAIN_WINDOW_MS/2) return;
-    const x1 = W/2 + dtStart / msPerPx;
-    const x2 = W/2 + dtEnd   / msPerPx;
-    const isCurrent = curMs >= ev.start_ms && curMs <= ev.end_ms;
-    ctx.strokeStyle = isCurrent ? '#ff3333' : '#ff9d3a';
-    ctx.lineWidth = isCurrent ? 2 : 1.5;
-    ctx.strokeRect(Math.max(0,x1), 1, Math.min(W,x2)-Math.max(0,x1), H-2);
-  }});
 
   // ── 구간 범위(회색 직사각형 틀) ────────────────────────────────
   // 재생 중: 중앙바(현재 재생 위치)가 지나는 구간 / 정지 중: 선택한 구간
@@ -1404,19 +1401,15 @@ function applyAudioRangeToInputs() {{
 }}
 
 function jumpNextAudio() {{
-  if (audioEvents.length === 0) {{
-    setFeedback('영상을 재생하면 소리 구간이 자동으로 감지됩니다.', 'var(--text2)');
-    return;
-  }}
   const curMs = Math.round(vid.currentTime * 1000);
-  const next  = audioEvents.find(ev => ev.start_ms > curMs);
-  if (next) {{
-    currentAudioIdx = audioEvents.indexOf(next);
+  const idx = tier2Segs.findIndex(s => s.label === 'Barking' && s.start_ms > curMs);
+  if (idx >= 0) {{
+    const next = tier2Segs[idx];
     vid.currentTime = next.start_ms / 1000;
-    const si = tier2Segs.findIndex(s => next.start_ms >= s.start_ms && next.start_ms < s.end_ms);
-    if (si >= 0) selectSeg(si);
+    selectSeg(idx);
+    setFeedback(`🔊 다음 Barking 구간 (${{msToTC(next.start_ms)}})`, '#ff6b9d');
   }} else {{
-    setFeedback('더 이상 소리 구간이 없습니다.', 'var(--text2)');
+    setFeedback('더 이상 Barking 구간이 없습니다.', 'var(--text2)');
   }}
 }}
 
@@ -1588,14 +1581,17 @@ function updatePlayheads(){{
   tcDisp.textContent=msToTC(Math.round(vid.currentTime*1000));
   const ms=Math.round(vid.currentTime*1000);
   const idx=tier2Segs.findIndex(s=>ms>=s.start_ms&&ms<=s.end_ms);
-  if(idx>=0&&idx!==lastSegIdx){{
+  if(idx!==lastSegIdx){{
+    document.getElementById('srow_'+lastSegIdx)?.classList.remove('playing');
     lastSegIdx=idx;
-    const s=tier2Segs[idx];
-    document.getElementById('nowLabel').textContent=s.label;
-    document.getElementById('nowLabel').style.color=getLabelTextColor(s.label);
-    document.getElementById('nowConf').textContent='conf: '+s.conf.toFixed(3)+(s.low_conf?' ⚠':'');
-    const row=document.getElementById('srow_'+idx);
-    if(row)row.scrollIntoView({{block:'nearest'}});
+    if(idx>=0){{
+      const s=tier2Segs[idx];
+      document.getElementById('nowLabel').textContent=s.label;
+      document.getElementById('nowLabel').style.color=getLabelTextColor(s.label);
+      document.getElementById('nowConf').textContent='conf: '+s.conf.toFixed(3)+(s.low_conf?' ⚠':'');
+      const row=document.getElementById('srow_'+idx);
+      if(row){{row.classList.add('playing');row.scrollIntoView({{block:'nearest'}});}}
+    }}
   }}
   if(!vid.paused){{
     const scroll=document.getElementById('tlScroll');
@@ -1721,7 +1717,7 @@ function renderSegList(){{
   const wrap=document.getElementById('segListWrap');wrap.innerHTML='';
   tier2Segs.forEach((s,i)=>{{
     const item=document.createElement('div');
-    let cls='seg-item'+(s.low_conf?' low-conf-item':'')+(s.modified?' modified-item':'')+(i===selectedIdx?' active':'');
+    let cls='seg-item'+(s.low_conf?' low-conf-item':'')+(s.modified?' modified-item':'')+(i===selectedIdx?' active':'')+(i===lastSegIdx?' playing':'');
     item.className=cls;item.id='srow_'+i;
     const confColor=s.low_conf?'var(--red)':s.conf>0.85?'var(--green)':'#888';
     item.innerHTML=`
@@ -1781,19 +1777,6 @@ function applyEdit(){{
   setFeedback(`✓ ${{newLabel}} | ${{msToTC(startMs)}} ~ ${{msToTC(endMs)}}${{snapped?' [스냅]':''}}`,COLORS[newLabel]||'var(--green)');
   renderAll();renderSegList();updateModCounter();
 
-  // Barking 적용 시 다음 소리 구간으로 자동 이동
-  if (newLabel === 'Barking' && audioEvents.length > 0) {{
-    const nextAudio = audioEvents.find(ev => ev.start_ms > endMs);
-    if (nextAudio) {{
-      currentAudioIdx = audioEvents.indexOf(nextAudio);
-      vid.currentTime = nextAudio.start_ms / 1000;
-      const si = tier2Segs.findIndex(s => nextAudio.start_ms >= s.start_ms && nextAudio.start_ms < s.end_ms);
-      if (si >= 0) selectSeg(si);
-      setFeedback('🔊 Barking 적용 → 다음 소리 구간으로 이동', '#ff6b9d');
-      return;
-    }}
-  }}
-
   // ── 적용 후 자동 다음 구간으로 이동 ──────────────────────────────────
   // 종료시간 → 다음 구간 시작시간으로 자동 설정
   const newIdx=tier2Segs.findIndex(s=>s.start_ms===startMs&&s.end_ms===endMs);
@@ -1835,16 +1818,23 @@ function splitAtCurrent(){{
 
 // ── 구간 병합 ────────────────────────────────────────────────────────────
 function mergeSelected(){{
-  if(selectedIdx<0||selectedIdx>=tier2Segs.length-1){{setFeedback('병합할 다음 구간이 없습니다.','#888');return;}}
-  const a=tier2Segs[selectedIdx],b=tier2Segs[selectedIdx+1];
-  if(a.label!==b.label){{setFeedback(`레이블이 다릅니다: ${{a.label}} ≠ ${{b.label}}. 먼저 같은 레이블로 수정하세요.`,'var(--red)');return;}}
+  if(selectedIdx<0){{setFeedback('병합할 구간을 먼저 선택하세요.','#888');return;}}
+  const label=tier2Segs[selectedIdx].label;
+  // 선택 구간을 기준으로 좌우로 연속된 같은 레이블 구간을 모두 포함 (개수 무관)
+  let lo=selectedIdx, hi=selectedIdx;
+  while(lo>0 && tier2Segs[lo-1].label===label) lo--;
+  while(hi<tier2Segs.length-1 && tier2Segs[hi+1].label===label) hi++;
+  if(lo===hi){{setFeedback('인접한 같은 레이블 구간이 없습니다.','#888');return;}}
   history.push(JSON.parse(JSON.stringify(tier2Segs)));if(history.length>50)history.shift();
-  const merged={{...a,end_ms:b.end_ms,end_idx:b.end_idx,modified:true,
-    conf:Math.round((a.conf+b.conf)/2*1000)/1000,low_conf:a.low_conf||b.low_conf}};
-  tier2Segs.splice(selectedIdx,2,merged);
+  const run=tier2Segs.slice(lo,hi+1);
+  const first=run[0], last=run[run.length-1];
+  const avgConf=run.reduce((s,x)=>s+x.conf,0)/run.length;
+  const merged={{...first,end_ms:last.end_ms,end_idx:last.end_idx,modified:true,
+    conf:Math.round(avgConf*1000)/1000,low_conf:run.some(x=>x.low_conf)}};
+  tier2Segs.splice(lo,run.length,merged);
   renderAll();renderSegList();updateModCounter();
-  setFeedback(`⊕ 병합 완료: ${{a.label}} ${{msToTC(a.start_ms)}}~${{msToTC(b.end_ms)}}`,COLORS[a.label]||'var(--green)');
-  selectSeg(selectedIdx);
+  setFeedback(`⊕ ${{run.length}}개 구간 병합 완료: ${{label}} ${{msToTC(first.start_ms)}}~${{msToTC(last.end_ms)}}`,COLORS[label]||'var(--green)');
+  selectSeg(lo);
 }}
 
 function makeNewSeg(startMs,endMs,label){{
@@ -1902,12 +1892,6 @@ function confirmSave(){{
   const statName  = fname + '_stats.json';
 
   // tier2 → ID_ROWS 동기화 + sentiment 업데이트
-  function getSentiment(label) {{
-    if(G_POSITIVE.has(label)) return 'Positive';
-    if(G_NEGATIVE.has(label)) return 'Negative';
-    if(label==='미분류') return 'Background';
-    return 'Positive';
-  }}
   IDS.forEach(id=>{{
     state[id].tier2Segs.forEach(s=>{{
       ID_ROWS[id].forEach(r=>{{
@@ -2011,9 +1995,9 @@ function loadCsvBackup(input) {{
   reader.readAsText(file);
 }}
 
-// ── 자동저장 (30초마다) ──────────────────────────────────────────────────
-function autoSave() {{
-  // 현재 tier2Segs → CSV 생성
+// ── 현재 검수 상태 → reviewed CSV 문자열 ─────────────────────────────────
+function buildReviewedCsv() {{
+  // tier2Segs(수정본) → ID_ROWS 동기화
   IDS.forEach(id => {{
     state[id].tier2Segs.forEach(s => {{
       ID_ROWS[id].forEach(r => {{
@@ -2024,17 +2008,95 @@ function autoSave() {{
       }});
     }});
   }});
-
   const allRows = [];
   IDS.forEach(id => {{
     ID_ROWS[id].forEach(r => {{ const row = {{...r}}; if(HAS_ID) row.id = id; allRows.push(row); }});
   }});
   allRows.sort((a,b) => a.timestamp - b.timestamp);
-
   const lines = [SAVE_COLS.join(',')];
   allRows.forEach(r => lines.push(SAVE_COLS.map(c => r[c] !== undefined ? r[c] : '').join(',')));
-  const csv = lines.join('\\n');
+  return lines.join('\\n');
+}}
 
+// ── 저장된 reviewed CSV → 현재 상태 복원 ─────────────────────────────────
+function rebuildSegsFromRows(id) {{
+  const rows = ID_ROWS[id];
+  const origSegs = ID_SEGS_ORIG[id] || [];
+  function origLabelAt(ms) {{
+    for (const s of origSegs) {{ if (ms >= s.start_ms && ms <= s.end_ms) return s.label; }}
+    return null;
+  }}
+  const segs = [];
+  let i = 0;
+  while (i < rows.length) {{
+    let j = i + 1;
+    const cc = [rows[i].confidence != null ? rows[i].confidence : 1];
+    let mod = rows[i].pred_label !== origLabelAt(rows[i].time_ms);
+    while (j < rows.length && rows[j].pred_label === rows[i].pred_label) {{
+      cc.push(rows[j].confidence != null ? rows[j].confidence : 1);
+      if (rows[j].pred_label !== origLabelAt(rows[j].time_ms)) mod = true;
+      j++;
+    }}
+    const avg = cc.reduce((a,b)=>a+b,0) / cc.length;
+    segs.push({{
+      label: rows[i].pred_label, start_ms: rows[i].time_ms, end_ms: rows[j-1].time_ms,
+      conf: Math.round(avg*1000)/1000, low_conf: avg < CONF_THRESH,
+      start_idx: i, end_idx: j-1, modified: mod
+    }});
+    i = j;
+  }}
+  return segs;
+}}
+
+function applyReviewedCsv(text) {{
+  const lines = text.trim().split('\\n');
+  if (lines.length < 2) return 0;
+  const headers = lines[0].split(',');
+  const tsIdx = headers.indexOf('timestamp');
+  const labelIdx = headers.indexOf('pred_label');
+  const idIdx = headers.indexOf('id');
+  if (tsIdx < 0 || labelIdx < 0) return 0;
+  const map = {{}};
+  for (let i = 1; i < lines.length; i++) {{
+    const c = lines[i].split(',');
+    if (c.length < headers.length) continue;
+    const id = (HAS_ID && idIdx >= 0) ? c[idIdx] : 'default';
+    map[id + '|' + c[tsIdx]] = c[labelIdx];
+  }}
+  let changed = 0;
+  IDS.forEach(id => {{
+    ID_ROWS[id].forEach(r => {{
+      const lbl = map[id + '|' + String(r.timestamp)];
+      if (lbl !== undefined && lbl !== '') {{
+        if (r.pred_label !== lbl) changed++;
+        r.pred_label = lbl;
+        r.sentiment = getSentiment(lbl);
+      }}
+    }});
+    state[id].tier2Segs = rebuildSegsFromRows(id);
+    state[id].history = [];
+  }});
+  return changed;
+}}
+
+// 서버에 저장된 reviewed CSV가 있으면 자동 복원 (CLI 방식은 fetch 실패 → 무시)
+function autoRestore() {{
+  const base = OUT_NAME.replace('_labeled_reviewed.csv', '');
+  fetch('/load/' + base)
+    .then(r => r.json())
+    .then(d => {{
+      if (!d || !d.exists || !d.csv) return;
+      const changed = applyReviewedCsv(d.csv);
+      renderAll(); renderSegList(); updateModCounter(); updateProgress();
+      const when = d.updated ? new Date(d.updated * 1000).toLocaleString('ko-KR') : '';
+      setFeedback(`↩ 이전 검수 내역 복원됨 (${{changed}}개 구간 수정) ${{when}}`, 'var(--green)');
+    }})
+    .catch(() => {{}});  // 서버 없으면 무시 (CLI 방식)
+}}
+
+// ── 자동저장 (30초마다) ──────────────────────────────────────────────────
+function autoSave() {{
+  const csv = buildReviewedCsv();
   // 서버에 autosave 요청 (서버 방식일 때만)
   fetch('/autosave/' + OUT_NAME.replace('_labeled_reviewed.csv',''), {{
     method: 'POST',
@@ -2054,10 +2116,22 @@ function autoSave() {{
 
 // 자동저장 30초마다 실행
 setInterval(autoSave, 30000);
+
+// 페이지 닫기/새로고침 직전 마지막 저장 보장 (30초 주기 사이 유실 방지)
+window.addEventListener('beforeunload', () => {{
+  try {{
+    const csv = buildReviewedCsv();
+    const base = OUT_NAME.replace('_labeled_reviewed.csv', '');
+    const blob = new Blob([JSON.stringify({{csv}})], {{type: 'application/json'}});
+    navigator.sendBeacon('/autosave/' + base, blob);
+  }} catch(e) {{}}
+}});
+
 autoFormatTC(startI);autoFormatTC(endI);
 buildTiers();
 buildIdTabs();
 renderRuler();renderAll();renderSegList();updateProgress();applyZoom();
+autoRestore();  // 서버에 저장된 이전 검수 내역이 있으면 복원
 window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();}});
 </script>
 </body>
