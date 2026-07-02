@@ -256,8 +256,7 @@ def analyze_audio(video_path, threshold_db=None, merge_gap_ms=1000, min_dur_ms=3
 
 def make_elan(sensor_path, label_path, video_path, output_html,
               conf_threshold=0.7, manual_offset=None,
-              encoder_path=None, classes_override=None, extra_classes=None,
-              out_subdir=''):
+              encoder_path=None, classes_override=None, extra_classes=None):
 
     import subprocess
 
@@ -409,8 +408,6 @@ def make_elan(sensor_path, label_path, video_path, output_html,
     save_cols_js = str(save_cols).replace("'",'"')
     out_filename  = os.path.splitext(os.path.basename(sensor_path))[0]+'_labeled_reviewed.csv'
     stat_filename = os.path.splitext(os.path.basename(sensor_path))[0]+'_review_stats.json'
-    # 서버 저장용 하위폴더(outputs 기준 상대경로) — JS 문자열에 안전하게 정규화
-    out_subdir = (out_subdir or '').replace('\\', '/').strip('/')
     has_id_js     = 'true' if has_id else 'false'
     # 클래스 목록 JS 배열 (단축키 힌트용)
 
@@ -948,9 +945,6 @@ const TOTAL_SEC   = TOTAL_MS/1000;
 const SAVE_COLS   = {save_cols_js};
 const OUT_NAME    = '{out_filename}';
 const STAT_NAME   = '{stat_filename}';
-const OUT_SUBDIR  = '{out_subdir}';   // 서버 저장 시 하위폴더(outputs 기준 상대경로). 비면 최상위
-// 서버 저장/복원 URL에 하위폴더를 sub 쿼리로 실어보냄 (standalone에선 fetch 실패 → 무시)
-function _subQ() {{ return OUT_SUBDIR ? ('?sub=' + encodeURIComponent(OUT_SUBDIR)) : ''; }}
 const CONF_THRESH = {conf_threshold};
 const IMU_STEP    = 10;
 const TOTAL_SEGS  = {total_seg_count};
@@ -2163,7 +2157,7 @@ function applyReviewedCsv(text) {{
 // 서버에 저장된 reviewed CSV가 있으면 자동 복원 (CLI 방식은 fetch 실패 → 무시)
 function autoRestore() {{
   const base = OUT_NAME.replace('_labeled_reviewed.csv', '');
-  fetch('/load/' + base + _subQ())
+  fetch('/load/' + base)
     .then(r => r.json())
     .then(d => {{
       if (!d || !d.exists || !d.csv) return;
@@ -2179,7 +2173,7 @@ function autoRestore() {{
 function autoSave() {{
   const csv = buildReviewedCsv();
   // 서버에 autosave 요청 (서버 방식일 때만)
-  fetch('/autosave/' + OUT_NAME.replace('_labeled_reviewed.csv','') + _subQ(), {{
+  fetch('/autosave/' + OUT_NAME.replace('_labeled_reviewed.csv',''), {{
     method: 'POST',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{csv}})
@@ -2204,7 +2198,7 @@ window.addEventListener('beforeunload', () => {{
     const csv = buildReviewedCsv();
     const base = OUT_NAME.replace('_labeled_reviewed.csv', '');
     const blob = new Blob([JSON.stringify({{csv}})], {{type: 'application/json'}});
-    navigator.sendBeacon('/autosave/' + base + _subQ(), blob);
+    navigator.sendBeacon('/autosave/' + base, blob);
   }} catch(e) {{}}
 }});
 
@@ -2275,8 +2269,6 @@ if __name__=='__main__':
                         help='label_encoder.pkl 경로 (전체 클래스 목록 로드)')
     parser.add_argument('--classes',   type=str,   default=None,
                         help='클래스 직접 지정 (쉼표 구분, 예: Standing,Lying,Running)')
-    parser.add_argument('--out-subdir', type=str, default='',
-                        help='서버 저장 시 검수결과를 넣을 outputs 기준 하위폴더 (예: 260521/B)')
     parser.add_argument('--extra-classes', type=str, default=None,
                         help='추가 클래스 (쉼표 구분, 예: Scratching,Licking,Vomiting,Coughing)')
     args=parser.parse_args()
@@ -2284,4 +2276,4 @@ if __name__=='__main__':
                         args.sensor.replace('.csv','_viewer.html'))
     make_elan(args.sensor,args.label,args.video,out,args.threshold,args.offset,
               encoder_path=args.encoder, classes_override=args.classes,
-              extra_classes=args.extra_classes, out_subdir=args.out_subdir)
+              extra_classes=args.extra_classes)

@@ -95,56 +95,30 @@ def safe_base(name: str) -> str:
     return clean
 
 
-def safe_rel(sub: str) -> str:
-    """outputs 기준 하위폴더 상대경로 검증(경로 탈출 방지). 빈 값이면 ''."""
-    if not sub:
-        return ''
-    sub = sub.replace('\\', '/').strip('/')
-    if not sub:
-        return ''
-    target = (OUTPUTS_DIR / sub).resolve()
-    base = OUTPUTS_DIR.resolve()
-    if base != target and base not in target.parents:
-        raise HTTPException(400, '잘못된 하위폴더')
-    return sub
-
-
-def reviewed_paths(base: str, sub: str = ''):
-    """검수결과(csv)/통계(json) 저장 경로를 하위폴더까지 반영해 반환."""
-    base = safe_base(base)
-    rel  = safe_rel(sub)
-    d    = (OUTPUTS_DIR / rel) if rel else OUTPUTS_DIR
-    return d, d / f'{base}_labeled_reviewed.csv', d / f'{base}_review_stats.json'
-
-
 def get_file_list():
-    # viewer HTML은 시작 시 삭제되므로 라벨 CSV 기준으로 목록을 구성하되,
-    # outputs 하위폴더(예: 260521/B)까지 재귀 탐색해 (sub, base) 단위로 모은다.
-    found = {}   # (rel, base) -> 대표 mtime
+    # viewer HTML은 시작 시 삭제되므로, 영속되는 라벨 CSV 기준으로 목록을 구성한다.
+    bases = set()
+    for p in OUTPUTS_DIR.glob('*_labeled.csv'):
+        bases.add(p.stem.replace('_labeled', ''))
+    for p in OUTPUTS_DIR.glob('*_labeled_smoothed.csv'):
+        bases.add(p.stem.replace('_labeled_smoothed', ''))
 
-    def _add(path, suffix):
-        rel = str(path.parent.relative_to(OUTPUTS_DIR)).replace('\\', '/')
-        rel = '' if rel == '.' else rel
-        base = path.name[:-len(suffix)]
-        key = (rel, base)
-        found[key] = max(found.get(key, 0), path.stat().st_mtime)
-
-    for p in OUTPUTS_DIR.rglob('*_labeled.csv'):
-        _add(p, '_labeled.csv')
-    for p in OUTPUTS_DIR.rglob('*_labeled_smoothed.csv'):
-        _add(p, '_labeled_smoothed.csv')
+    def rep_mtime(base):
+        """정렬/표시용 대표 mtime (smoothed > labeled 순)."""
+        for name in (f'{base}_labeled_smoothed.csv', f'{base}_labeled.csv'):
+            f = OUTPUTS_DIR / name
+            if f.exists():
+                return f.stat().st_mtime
+        return 0
 
     items = []
-    for (rel, base), mtime in sorted(found.items(), key=lambda kv: kv[1], reverse=True):
-        rdir     = (OUTPUTS_DIR / rel) if rel else OUTPUTS_DIR
-        reviewed = rdir / f'{base}_labeled_reviewed.csv'
+    for base in sorted(bases, key=rep_mtime, reverse=True):
+        reviewed = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
         items.append({
-            'name':     (rel + '/' if rel else '') + base,
-            'base':     base,
-            'sub':      rel,
+            'name':     base,
             'html':     f'{base}_viewer.html',
             'status':   'completed' if reviewed.exists() else 'pending',
-            'updated':  datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M'),
+            'updated':  datetime.fromtimestamp(rep_mtime(base)).strftime('%Y-%m-%d %H:%M'),
         })
     return items
 
@@ -229,9 +203,8 @@ async def index():
     def make_card(item):
         color = '#1D9E75' if item['status'] == 'completed' else '#EF9F27'
         label = '✅ 완료' if item['status'] == 'completed' else '⏳ 대기'
-        sub_q = f'?sub={item["sub"]}' if item["sub"] else ''
         return f'''
-        <div class="card" onclick="location.href='/viewer/{item["html"]}{sub_q}'">
+        <div class="card" onclick="location.href='/viewer/{item["html"]}'">
           <div class="card-top">
             <div class="card-name">{item["name"]}</div>
             <div class="badge" style="background:{color}22;color:{color}">{label}</div>
@@ -532,41 +505,40 @@ async def status(job_id: str):
 
 
 @app.get('/viewer/{filename}', response_class=HTMLResponse)
-async def viewer(filename: str, sub: str = ''):
+async def viewer(filename: str):
     """뷰어 요청 시 make_viewer.py로 항상 재생성 → 캐시 없이 최신 UI/라벨 반영.
-    (검수 결과는 생성된 HTML의 autoRestore가 /load로 복원하므로 손실 없음)
-    sub: outputs 기준 하위폴더(예: 260521/B) — 검수결과를 같은 폴더에 저장하기 위함."""
+    (검수 결과는 생성된 HTML의 autoRestore가 /load로 복원하므로 손실 없음)"""
     filename = Path(filename).name
     if not filename.endswith('_viewer.html'):
         raise HTTPException(400, '잘못된 파일명')
-    rel         = safe_rel(sub)
-    label_dir   = (OUTPUTS_DIR / rel) if rel else OUTPUTS_DIR
-    viewer_out  = safe_under(label_dir, filename) if rel else safe_under(OUTPUTS_DIR, filename)
+    viewer_out  = safe_under(OUTPUTS_DIR, filename)
     base        = filename.replace('_viewer.html', '')
     sensor_base = base.replace('_labeled', '')
 
-    # 영상 파일 찾기 (매핑 우선, 없으면 test_data 전체에서 재귀 탐색)
-    video = None
+    # 영상 파일 찾기 (매핑 우선, 없으면 날짜 패턴으로 찾기)
     if sensor_base in video_map:
         video = TEST_DATA_DIR / Path(video_map[sensor_base]).name
         if not video.exists():
             video = None
-    if video is None:
+    else:
         ts_match = re.search(r'(\d{8}_\d{6})', sensor_base)
-        pat = f'*{ts_match.group(1)}*.mp4' if ts_match else f'*{sensor_base}*.mp4'
-        video = next(TEST_DATA_DIR.rglob(pat), None)
+        if ts_match:
+            ts = ts_match.group(1)
+            video = next(TEST_DATA_DIR.glob(f'*{ts}*.mp4'), None)
+        else:
+            video = next(TEST_DATA_DIR.glob(f'*{sensor_base}*.mp4'), None)
 
-    # 센서/라벨 파일 찾기 (센서는 test_data 재귀, 라벨은 해당 하위폴더에서 smoothed > labeled 순)
-    sensor = next(TEST_DATA_DIR.rglob(f'*{sensor_base}*.csv'), None)
-    label = label_dir / f'{sensor_base}_labeled_smoothed.csv'
+    # 센서/라벨 파일 찾기 (smoothed > labeled 순)
+    sensor = next(TEST_DATA_DIR.glob(f'*{sensor_base}*.csv'), None)
+    label = OUTPUTS_DIR / f'{sensor_base}_labeled_smoothed.csv'
     if not label.exists():
-        label = label_dir / f'{sensor_base}_labeled.csv'
+        label = OUTPUTS_DIR / f'{sensor_base}_labeled.csv'
     if not label.exists():
         raise HTTPException(404, f'레이블 파일 없음: {sensor_base}')
     if not sensor:
         raise HTTPException(404, f'센서 파일 없음: {sensor_base}')
 
-    # make_viewer.py로 재생성 (항상 최신 코드/라벨 반영, 검수결과 저장 하위폴더 전달)
+    # make_viewer.py로 재생성 (항상 최신 코드/라벨 반영)
     r = subprocess.run([
         'python', '/workspace/make_viewer.py',
         '--sensor',        str(sensor),
@@ -575,7 +547,6 @@ async def viewer(filename: str, sub: str = ''):
         '--output',        str(viewer_out),
         '--encoder',       '/workspace/preprocessed/label_encoder.pkl',
         '--extra-classes', 'Scratching,Licking,Vomiting,Coughing',
-        '--out-subdir',    rel,
     ], capture_output=True, text=True)
     if r.returncode != 0:
         raise HTTPException(500, f'뷰어 생성 실패: {r.stderr[-300:]}')
@@ -592,17 +563,15 @@ async def viewer(filename: str, sub: str = ''):
 
     # CSV 저장을 서버로 (stats 선언 이후 교체)
     base = safe_base(base)
-    sub_q      = f'?sub={rel}' if rel else ''        # 하위폴더를 저장 요청에 실어보냄
-    saved_name = (f'{rel}/' if rel else '') + f'{base}_labeled_reviewed.csv'
     old_save = "hideSaveModal();\n  setFeedback(`\u2713 \uc800\uc7a5 \uc644\ub8cc: ${finalName}`,'var(--green)');\n}"
     new_save = (
-        f"fetch('/save/{base}{sub_q}', {{\n"
+        f"fetch('/save/{base}', {{\n"
         f"    method:'POST',\n"
         f"    headers:{{'Content-Type':'application/json'}},\n"
         f"    body:JSON.stringify({{csv:lines.join('\\n'),stats:stats}})\n"
         f"  }}).then(r=>r.json()).then(()=>{{\n"
         f"    hideSaveModal();\n"
-        f"    setFeedback('\u2713 \uc800\uc7a5 \uc644\ub8cc: {saved_name}','var(--green)');\n"
+        f"    setFeedback('\u2713 \uc800\uc7a5 \uc644\ub8cc: {base}_labeled_reviewed.csv','var(--green)');\n"
         f"  }}).catch(()=>{{\n"
         f"    const a2=document.createElement('a');\n"
         f"    a2.href=URL.createObjectURL(blob);\n"
@@ -620,14 +589,8 @@ async def viewer(filename: str, sub: str = ''):
 
 @app.get('/video/{filename}')
 async def stream_video(filename: str, request: Request):
-    """영상 스트리밍 (Range 요청 지원). test_data 하위폴더까지 파일명으로 재귀 탐색."""
+    """영상 스트리밍 (Range 요청 지원)"""
     path = safe_under(TEST_DATA_DIR, filename)
-    if not path.exists():
-        # 하위폴더(예: test_data/260521/B/)에 있는 경우 파일명으로 재귀 탐색
-        name = Path(filename).name
-        found = next(TEST_DATA_DIR.rglob(name), None)
-        if found and found.resolve().is_relative_to(TEST_DATA_DIR.resolve()):
-            path = found
     if not path.exists():
         raise HTTPException(404, '영상 없음')
 
@@ -670,49 +633,51 @@ async def stream_video(filename: str, request: Request):
 
 
 @app.post('/autosave/{base}')
-async def autosave(base: str, request: Request, sub: str = ''):
-    """30초마다 자동저장 — reviewed CSV 덮어씀 (sub=하위폴더)"""
+async def autosave(base: str, request: Request):
+    """30초마다 자동저장 — reviewed CSV 덮어씀"""
     try:
-        d, reviewed, _ = reviewed_paths(base, sub)
+        base = safe_base(base)
         data = await request.json()
-        d.mkdir(parents=True, exist_ok=True)
-        reviewed.write_text(data.get('csv', ''), encoding='utf-8')
+        csv  = data.get('csv', '')
+        path = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
+        path.write_text(csv, encoding='utf-8')
         return JSONResponse({'ok': True})
     except Exception as e:
         return JSONResponse({'ok': False, 'error': str(e)})
 
 
 @app.get('/save/{base}')
-async def get_save(base: str, sub: str = ''):
-    """저장된 reviewed CSV 존재 여부 확인 (sub=하위폴더)"""
-    _, reviewed, _ = reviewed_paths(base, sub)
-    if reviewed.exists():
-        return JSONResponse({'exists': True, 'size': reviewed.stat().st_size,
-                             'updated': reviewed.stat().st_mtime})
+async def get_save(base: str):
+    """저장된 reviewed CSV 존재 여부 확인"""
+    base = safe_base(base)
+    path = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
+    if path.exists():
+        return JSONResponse({'exists': True, 'size': path.stat().st_size,
+                             'updated': path.stat().st_mtime})
     return JSONResponse({'exists': False})
 
 
 @app.get('/load/{base}')
-async def load_reviewed(base: str, sub: str = ''):
-    """저장된 reviewed CSV 내용 반환 — 뷰어 재진입 시 자동 복원용 (sub=하위폴더)"""
-    _, reviewed, _ = reviewed_paths(base, sub)
-    if reviewed.exists():
+async def load_reviewed(base: str):
+    """저장된 reviewed CSV 내용 반환 — 뷰어 재진입 시 자동 복원용"""
+    base = safe_base(base)
+    path = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
+    if path.exists():
         return JSONResponse({'exists': True,
-                             'csv': reviewed.read_text(encoding='utf-8'),
-                             'updated': reviewed.stat().st_mtime})
+                             'csv': path.read_text(encoding='utf-8'),
+                             'updated': path.stat().st_mtime})
     return JSONResponse({'exists': False})
 
 
 @app.post('/save/{base}')
-async def save_result(base: str, request: Request, sub: str = ''):
-    """검수 결과 서버에 저장 (sub=하위폴더 → 입력 구조와 동일하게 저장)"""
+async def save_result(base: str, request: Request):
+    """검수 결과 서버에 저장"""
     try:
-        d, reviewed, stats = reviewed_paths(base, sub)
+        base = safe_base(base)
         data = await request.json()
-        d.mkdir(parents=True, exist_ok=True)
-        reviewed.write_text(data.get('csv', ''), encoding='utf-8')
-        stats.write_text(
-            json.dumps(data.get('stats', {}), ensure_ascii=False, indent=2), encoding='utf-8')
+        (OUTPUTS_DIR / f'{base}_labeled_reviewed.csv').write_text(data.get('csv',''), encoding='utf-8')
+        (OUTPUTS_DIR / f'{base}_review_stats.json').write_text(
+            json.dumps(data.get('stats',{}), ensure_ascii=False, indent=2), encoding='utf-8')
         return JSONResponse({'ok': True})
     except Exception as e:
         raise HTTPException(500, str(e))
