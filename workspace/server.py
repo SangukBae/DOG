@@ -571,7 +571,7 @@ async def viewer(filename: str):
         f"    body:JSON.stringify({{csv:lines.join('\\n'),stats:stats}})\n"
         f"  }}).then(r=>r.json()).then(()=>{{\n"
         f"    hideSaveModal();\n"
-        f"    setFeedback('\u2713 \uc11c\ubc84 \uc800\uc7a5 \uc644\ub8cc','var(--green)');\n"
+        f"    setFeedback('\u2713 \uc800\uc7a5 \uc644\ub8cc: {base}_labeled_reviewed.csv','var(--green)');\n"
         f"  }}).catch(()=>{{\n"
         f"    const a2=document.createElement('a');\n"
         f"    a2.href=URL.createObjectURL(blob);\n"

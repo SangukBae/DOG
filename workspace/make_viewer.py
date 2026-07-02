@@ -736,12 +736,18 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
         <div class="side-title">구간 레이블 수정</div>
         <div class="tc-row">
           <div class="tc-wrap">
-            <label>시작 시간</label>
+            <label style="display:flex;align-items:center;gap:5px">시작 시간
+              <button onclick="startI.value=msToTC(Math.round(vid.currentTime*1000))" title="현재 재생 위치로 설정"
+                style="font-size:9px;padding:1px 5px;background:#2a2a2a;border:1px solid #444;color:#aaa;border-radius:3px;cursor:pointer;line-height:1.4">현재</button>
+            </label>
             <input class="tc-input" id="startInp" placeholder="00:00:00.000" maxlength="12">
           </div>
           <div class="arrow">→</div>
           <div class="tc-wrap">
-            <label>종료 시간</label>
+            <label style="display:flex;align-items:center;gap:5px">종료 시간
+              <button onclick="endI.value=msToTC(Math.round(vid.currentTime*1000))" title="현재 재생 위치로 설정"
+                style="font-size:9px;padding:1px 5px;background:#2a2a2a;border:1px solid #444;color:#aaa;border-radius:3px;cursor:pointer;line-height:1.4">현재</button>
+            </label>
             <input class="tc-input" id="endInp" placeholder="00:00:00.000" maxlength="12">
           </div>
         </div>
