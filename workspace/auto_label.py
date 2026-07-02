@@ -160,7 +160,7 @@ def infer(X, model, device, seq_len, num_classes):
     return all_probs
 
 
-def auto_label(input_path, threshold):
+def auto_label(input_path, threshold, output_dir=OUTPUT_DIR):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
@@ -265,9 +265,9 @@ def auto_label(input_path, threshold):
 
     df = df.rename(columns=COL_MAP_INV)
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     out_name = os.path.splitext(os.path.basename(input_path))[0] + '_labeled.csv'
-    out_path = os.path.join(OUTPUT_DIR, out_name)
+    out_path = os.path.join(output_dir, out_name)
     df.to_csv(out_path, index=False)
 
     unlabeled = (df['pred_label'] == 'Unlabeled').sum()
@@ -286,7 +286,10 @@ def auto_label(input_path, threshold):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input',     type=str,   required=True)
-    parser.add_argument('--threshold', type=float, default=CONFIDENCE_THRESH)
+    parser.add_argument('--input',      type=str,   required=True)
+    parser.add_argument('--threshold',  type=float, default=CONFIDENCE_THRESH)
+    parser.add_argument('--output-dir', type=str,   default=OUTPUT_DIR,
+                        help='라벨 CSV 저장 폴더 (기본 /workspace/outputs). '
+                             '입력 하위폴더 구조를 유지하려면 outputs/<하위경로>를 지정')
     args = parser.parse_args()
-    auto_label(args.input, args.threshold)
+    auto_label(args.input, args.threshold, args.output_dir)
