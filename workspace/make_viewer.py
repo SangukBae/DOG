@@ -1129,6 +1129,19 @@ function vidFull() {{
   if(vid.requestFullscreen) vid.requestFullscreen();
 }}
 
+// 영상 하단 라벨 바 폭을 실제 표시되는 영상 프레임 폭에 맞춤 (object-fit:contain 기준)
+function syncLabelBarWidth() {{
+  const bar = document.getElementById('nowLabelBar');
+  const wrap = document.getElementById('videoWrap');
+  if (!bar || !wrap) return;
+  if (!vid.videoWidth || !vid.videoHeight) {{ bar.style.width = ''; bar.style.margin = ''; return; }}
+  const cw = wrap.clientWidth, ch = wrap.clientHeight;
+  const scale = Math.min(cw / vid.videoWidth, ch / vid.videoHeight);
+  const dispW = Math.round(vid.videoWidth * scale);
+  bar.style.width = dispW + 'px';
+  bar.style.margin = '0 auto';   // 가운데 정렬 → 영상 프레임과 좌우 정렬
+}}
+
 const videoWrap = document.getElementById('videoWrap');
 if(videoWrap) {{
   // 마우스 휠 줌
@@ -1490,6 +1503,7 @@ vid.addEventListener('pause', () => {{ if (_rafId) {{ cancelAnimationFrame(_rafI
 vid.addEventListener('seeked',  updateAudioPlayhead);
 vid.addEventListener('seeking', updateAudioPlayhead);
 vid.addEventListener('loadedmetadata', updateAudioPlayhead);
+vid.addEventListener('loadedmetadata', syncLabelBarWidth);
 vid.addEventListener('ended', () => {{ if (_rafId) {{ cancelAnimationFrame(_rafId); _rafId = null; }} }});
 
 // OBS 스타일 레벨 미터
@@ -2199,7 +2213,7 @@ buildTiers();
 buildIdTabs();
 renderRuler();renderAll();renderSegList();updateProgress();applyZoom();
 autoRestore();  // 서버에 저장된 이전 검수 내역이 있으면 복원
-window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();drawLabelTrain();}});
+window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();drawLabelTrain();syncLabelBarWidth();}});
 
 // ── 타임라인 드래그 스크롤 ────────────────────────────────────────────────
 // 타임라인을 마우스로 끌어 좌우 이동. 드래그한 경우 클릭(이동/선택)은 무시.
