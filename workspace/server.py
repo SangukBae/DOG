@@ -150,11 +150,13 @@ def get_file_list():
 
 
 def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: Path = None,
-                 threshold: float = 0.7, audio_db_margin: float = 12):
-    """백그라운드에서 파이프라인 실행"""
+                 threshold: float = 0.7, audio_db_margin: float = 12, out_subdir: str = ''):
+    """백그라운드에서 파이프라인 실행 (out_subdir: outputs 하위폴더 → 입력 구조 유지)"""
     try:
         base       = sensor_path.stem
-        viewer_out = OUTPUTS_DIR / f'{base}_viewer.html'
+        out_dir    = (OUTPUTS_DIR / out_subdir) if out_subdir else OUTPUTS_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
+        viewer_out = out_dir / f'{base}_viewer.html'
 
         if label_path:
             # 이미 레이블 파일 있으면 오토레이블링/후처리 스킵 (검수된 데이터 보존)
@@ -165,13 +167,13 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
             pipeline_status[job_id] = {'status': 'running', 'message': '[1/3] 오토 레이블링 중...', 'viewer_url': None}
             r1 = subprocess.run(
                 ['python', '/workspace/auto_label.py', '--input', str(sensor_path),
-                 '--threshold', str(threshold)],
+                 '--threshold', str(threshold), '--output-dir', str(out_dir)],
                 capture_output=True, text=True
             )
             if r1.returncode != 0:
                 pipeline_status[job_id] = {'status': 'error', 'message': r1.stderr[-500:], 'viewer_url': None}
                 return
-            label_out = OUTPUTS_DIR / f'{base}_labeled.csv'
+            label_out = out_dir / f'{base}_labeled.csv'
 
             # 2단계: 필터링(flicker 정리) + 소리 큰 구간 Barking 처리
             pipeline_status[job_id]['message'] = '[2/3] 필터링 + 소리 처리 중...'
@@ -184,7 +186,7 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
                 '--video',          str(video_path),
                 '--audio-db-margin', str(audio_db_margin),
             ], capture_output=True, text=True)
-            smoothed_out = OUTPUTS_DIR / f'{base}_labeled_smoothed.csv'
+            smoothed_out = out_dir / f'{base}_labeled_smoothed.csv'
             if r_pp.returncode == 0 and smoothed_out.exists():
                 label_out = smoothed_out          # 후처리 결과를 뷰어 입력으로 사용
             else:
@@ -202,6 +204,7 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
             '--threshold',     str(threshold),
             '--encoder',       '/workspace/preprocessed/label_encoder.pkl',
             '--extra-classes', 'Scratching,Licking,Vomiting,Coughing',
+            '--out-subdir',    out_subdir,
         ], capture_output=True, text=True)
 
         if r2.returncode != 0:
@@ -211,7 +214,7 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
         pipeline_status[job_id] = {
             'status':     'done',
             'message':    '완료!',
-            'viewer_url': f'/viewer/{viewer_out.name}',
+            'viewer_url': f'/viewer/{viewer_out.name}' + (f'?sub={out_subdir}' if out_subdir else ''),
         }
 
     except Exception as e:
@@ -306,6 +309,10 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
         <input class="file-input" type="file" id="videoFile" accept=".mp4,video/*">
       </div>
     </div>
+    <div class="file-label" style="margin-bottom:14px;max-width:360px">
+      <span>하위폴더 (선택) — outputs/&lt;여기&gt;/ 아래에 저장, 비우면 최상위</span>
+      <input class="file-input" type="text" id="subdirInput" placeholder="예: 260521/B">
+    </div>
     <div class="file-label" style="margin-bottom:14px;max-width:240px">
       <span>신뢰도 임계값 (이 값 미만 → Unlabeled)</span>
       <input class="file-input" type="number" id="thresholdInput" value="0.7" min="0" max="1" step="0.05">
@@ -334,6 +341,7 @@ async function runPipeline() {{
   const video  = document.getElementById('videoFile').files[0];
   const threshold = document.getElementById('thresholdInput').value || '0.7';
   const audioDbMargin = document.getElementById('audioDbMargin').value || '12';
+  const subdir = document.getElementById('subdirInput').value.trim();
   if (!sensor || !video) {{ alert('센서 CSV와 영상 파일을 모두 선택하세요.'); return; }}
 
   const btn  = document.getElementById('runBtn');
@@ -349,6 +357,7 @@ async function runPipeline() {{
   fd.append('video',  video);
   fd.append('threshold', threshold);
   fd.append('audio_db_margin', audioDbMargin);
+  fd.append('subdir', subdir);
 
   try {{
     const r    = await fetch('/upload', {{method:'POST', body:fd}});
@@ -411,6 +420,13 @@ function assignDropped(files) {{
     dt.items.add(f);
     document.getElementById(target).files = dt.files;
     if (isCsv) sensorSet = true; else videoSet = true;
+    // 폴더째 드래그해서 상대경로가 있으면 하위폴더 자동 채움 (best-effort)
+    const rp = f.webkitRelativePath || '';
+    if (isCsv && rp.includes('/')) {{
+      const sd = rp.slice(0, rp.lastIndexOf('/'));
+      const inp = document.getElementById('subdirInput');
+      if (inp && !inp.value.trim()) inp.value = sd;
+    }}
   }}
   const prog = document.getElementById('progress');
   if (sensorSet || videoSet) {{
@@ -449,13 +465,16 @@ async def upload(background_tasks: BackgroundTasks,
                  sensor: UploadFile = File(...),
                  video:  UploadFile = File(...),
                  threshold: float = Form(0.7),
-                 audio_db_margin: float = Form(12)):
-    """파일 업로드 + 파이프라인 백그라운드 실행"""
+                 audio_db_margin: float = Form(12),
+                 subdir: str = Form('')):
+    """파일 업로드 + 파이프라인 백그라운드 실행 (subdir: outputs/test_data 하위폴더)"""
     try:
-        # 파일 저장 (경로 탈출 방지: 업로드 파일명은 base_dir 안으로 강제)
-        TEST_DATA_DIR.mkdir(exist_ok=True)
-        sensor_path = safe_under(TEST_DATA_DIR, sensor.filename or 'sensor.csv')
-        video_path  = safe_under(TEST_DATA_DIR, video.filename or 'video.mp4')
+        # 하위폴더(경로 탈출 방지) → test_data/<subdir>/ 아래에 저장
+        rel = safe_rel(subdir)
+        save_dir = (TEST_DATA_DIR / rel) if rel else TEST_DATA_DIR
+        save_dir.mkdir(parents=True, exist_ok=True)
+        sensor_path = safe_under(save_dir, sensor.filename or 'sensor.csv')
+        video_path  = safe_under(save_dir, video.filename or 'video.mp4')
 
         with open(sensor_path, 'wb') as f:
             f.write(await sensor.read())
@@ -502,7 +521,7 @@ async def upload(background_tasks: BackgroundTasks,
                 ts_match = re.search(r'(\d{8}_\d{6})', sensor_path.stem)
                 if ts_match:
                     ts = ts_match.group(1)
-                    orig = next((f for f in TEST_DATA_DIR.glob(f'*{ts}*.csv')
+                    orig = next((f for f in TEST_DATA_DIR.rglob(f'*{ts}*.csv')
                                  if 'labeled' not in f.stem), None)
                     if orig:
                         sensor_path = orig
@@ -516,7 +535,7 @@ async def upload(background_tasks: BackgroundTasks,
         job_id = f"{safe_base(sensor.filename or 'job')}_{datetime.now().strftime('%H%M%S')}"
         _prune_status()
         pipeline_status[job_id] = {'status': 'running', 'message': '시작 중...', 'viewer_url': None}
-        background_tasks.add_task(run_pipeline, job_id, sensor_path, video_path, label_path, threshold, audio_db_margin)
+        background_tasks.add_task(run_pipeline, job_id, sensor_path, video_path, label_path, threshold, audio_db_margin, rel)
 
         return JSONResponse({'job_id': job_id})
 
