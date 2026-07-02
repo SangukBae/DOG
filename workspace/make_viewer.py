@@ -1135,24 +1135,16 @@ function vidFull() {{
   if(vid.requestFullscreen) vid.requestFullscreen();
 }}
 
-// 영상 하단 라벨 바 폭 조정: 패널의 70%를 상한으로 항상 좁게 가운데 정렬하되,
-// 영상 표시 폭이 그보다 좁으면(세로 영상 등) 영상 폭에 맞춘다.
-const LABEL_BAR_MAX_RATIO = 0.7;
+// 영상 하단 라벨 바 폭: 영상 크기와 무관하게 오디오 표시 영역 폭의 70%로 고정 + 가운데 정렬
+const LABEL_BAR_RATIO = 0.7;
 function syncLabelBarWidth() {{
   const bar = document.getElementById('nowLabelBar');
-  const wrap = document.getElementById('videoWrap');
-  if (!bar || !wrap) return;
-  const cw = wrap.clientWidth, ch = wrap.clientHeight;
-  if (!cw) return;
-  const cap = cw * LABEL_BAR_MAX_RATIO;      // 패널 폭의 70% 상한
-  let target = cap;
-  if (vid.videoWidth && vid.videoHeight) {{
-    const scale = Math.min(cw / vid.videoWidth, ch / vid.videoHeight);
-    const dispW = vid.videoWidth * scale;    // object-fit:contain 기준 실제 표시 폭
-    target = Math.min(dispW, cap);           // 영상이 더 좁으면 영상에, 넓으면 70%로 제한
-  }}
-  bar.style.width = Math.round(target) + 'px';
-  bar.style.margin = '0 auto';               // 가운데 정렬
+  const audio = document.getElementById('audioTrainWrap');
+  if (!bar || !audio) return;
+  const aw = audio.clientWidth;
+  if (!aw) return;
+  bar.style.width = Math.round(aw * LABEL_BAR_RATIO) + 'px';  // 오디오 영역 폭의 70%
+  bar.style.margin = '0 auto';                                // 가운데 정렬
 }}
 
 const videoWrap = document.getElementById('videoWrap');
