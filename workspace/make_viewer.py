@@ -1947,7 +1947,7 @@ function fillFromVideo(){{startI.value=msToTC(snapMs(Math.round(vid.currentTime*
 function undoLast(){{
   if(!history.length){{setFeedback('되돌릴 내용 없음','#888');return;}}
   tier2Segs=history.pop();
-  tier2Segs.forEach(s=>{{ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=s.start_ms&&r.time_ms<s.end_ms)r.pred_label=s.label;}});}});
+  tier2Segs.forEach(s=>{{ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=s.start_ms&&r.time_ms<=s.end_ms)r.pred_label=s.label;}});}});
   renderAll();renderSegList();updateModCounter();setFeedback('↩ 되돌렸습니다','var(--yellow)');
 }}
 function jumpLowConf(){{
@@ -1988,7 +1988,7 @@ function confirmSave(){{
   IDS.forEach(id=>{{
     state[id].tier2Segs.forEach(s=>{{
       ID_ROWS[id].forEach(r=>{{
-        if(r.time_ms>=s.start_ms&&r.time_ms<s.end_ms){{
+        if(r.time_ms>=s.start_ms&&r.time_ms<=s.end_ms){{
           r.pred_label=s.label;
           r.sentiment=getSentiment(s.label);
         }}
@@ -2068,7 +2068,7 @@ function buildReviewedCsv() {{
   IDS.forEach(id => {{
     state[id].tier2Segs.forEach(s => {{
       ID_ROWS[id].forEach(r => {{
-        if (r.time_ms >= s.start_ms && r.time_ms < s.end_ms) {{
+        if (r.time_ms >= s.start_ms && r.time_ms <= s.end_ms) {{
           r.pred_label = s.label;
           r.sentiment  = getSentiment(s.label);
         }}
@@ -2112,7 +2112,21 @@ function rebuildSegsFromRows(id) {{
     }});
     i = j;
   }}
-  return segs;
+  // 방어: 단일프레임(0ms) 구간은 이전 구간에 흡수 (예: 오디오 Barking 아티팩트).
+  // 원본 행 라벨도 덮어써 재저장 시 재발/클릭불가(0ms) 구간을 막는다.
+  const cleaned = [];
+  for (const s of segs) {{
+    if (cleaned.length && s.end_idx === s.start_idx) {{
+      const prev = cleaned[cleaned.length - 1];
+      rows[s.start_idx].pred_label = prev.label;
+      rows[s.start_idx].sentiment  = getSentiment(prev.label);
+      prev.end_ms  = s.end_ms;
+      prev.end_idx = s.end_idx;
+    }} else {{
+      cleaned.push(s);
+    }}
+  }}
+  return cleaned;
 }}
 
 function applyReviewedCsv(text) {{
