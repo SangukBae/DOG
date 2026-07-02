@@ -923,7 +923,7 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
         <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
           <input id="saveFileNameInp" type="text"
             style="flex:1;background:#111;border:1px solid var(--border2);color:var(--accent);
-                   border-radius:6px;padding:8px 10px;font-size:13px;font-family:monospace;outline:none"
+                   border-radius:6px;padding:8px 10px 10px 10px;font-size:13px;font-family:monospace;outline:none;line-height:1.6"
             placeholder="파일명 입력">
           <span style="color:var(--text3);font-size:12px;white-space:nowrap">.csv</span>
         </div>
@@ -2032,6 +2032,7 @@ document.addEventListener('keydown',e=>{{
     confirmSave();e.preventDefault();return;
   }}
   if(SHORTCUTS[e.key]){{labelS.value=SHORTCUTS[e.key];return;}}
+  if(e.key==='Enter'){{applyEdit();e.preventDefault();return;}}  // 단축키로 클래스 선택 후 Enter → 적용
   if(e.key===' '){{vid.paused?vid.play():vid.pause();e.preventDefault();}}
   if(e.key==='ArrowRight'){{vid.currentTime+=e.shiftKey?0.04:1;e.preventDefault();}}
   if(e.key==='ArrowLeft'){{vid.currentTime-=e.shiftKey?0.04:1;e.preventDefault();}}
@@ -2049,37 +2050,10 @@ function loadCsvBackup(input) {{
   const reader = new FileReader();
   reader.onload = e => {{
     try {{
-      const lines = e.target.result.trim().split('\\n');
-      const headers = lines[0].split(',');
-      const labelIdx = headers.indexOf('pred_label');
-      const startIdx = headers.indexOf('timestamp');
-      if (labelIdx < 0) {{ setFeedback('❌ pred_label 컬럼을 찾을 수 없습니다', 'var(--red)'); return; }}
-
-      // CSV rows → timestamp별 레이블 맵
-      const labelMap = {{}};
-      for (let i = 1; i < lines.length; i++) {{
-        const cols = lines[i].split(',');
-        if (cols.length < headers.length) continue;
-        const ts = parseFloat(cols[startIdx]);
-        const label = cols[labelIdx];
-        if (!isNaN(ts) && label) labelMap[ts] = label;
-      }}
-
-      // tier2Segs 레이블 업데이트
-      let updated = 0;
-      tier2Segs.forEach(s => {{
-        const rows = ID_ROWS[currentId].filter(r => r.time_ms >= s.start_ms && r.time_ms < s.end_ms);
-        if (rows.length === 0) return;
-        const ts = rows[0].timestamp;
-        if (labelMap[ts] !== undefined && labelMap[ts] !== s.label) {{
-          s.label = labelMap[ts];
-          s.modified = true;
-          updated++;
-        }}
-      }});
-
-      renderAll(); renderSegList(); updateProgress();
-      setFeedback(`✓ CSV 불러오기 완료 — ${{updated}}개 구간 복구됨`, 'var(--green)');
+      // 서버 복원과 동일한 로직으로 timestamp 단위 전체 복원 → 중간저장분을 그대로 이어서 검수
+      const changed = applyReviewedCsv(e.target.result);
+      renderAll(); renderSegList(); updateModCounter(); updateProgress();
+      setFeedback(`✓ CSV 불러오기 완료 — ${{changed}}개 프레임 복구됨`, 'var(--green)');
       input.value = '';
     }} catch(err) {{
       setFeedback('❌ CSV 파싱 오류: ' + err.message, 'var(--red)');
