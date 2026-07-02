@@ -15,9 +15,24 @@ if [ -z "$SENSOR" ] || [ -z "$VIDEO" ]; then
 fi
 
 BASE=$(basename "$SENSOR" .csv)
-LABEL_OUT="/workspace/outputs/${BASE}_labeled.csv"
-SMOOTH_OUT="/workspace/outputs/${BASE}_labeled_smoothed.csv"
-VIEWER_OUT="/workspace/outputs/${BASE}_viewer.html"
+
+# 입력이 test_data 하위폴더에 있으면 그 구조를 outputs 아래에 그대로 유지
+# 예: /workspace/test_data/260521/B/xxx.csv → /workspace/outputs/260521/B/
+TEST_ROOT=/workspace/test_data
+SENSOR_DIR=$(cd "$(dirname "$SENSOR")" && pwd)
+if [[ "$SENSOR_DIR" == "$TEST_ROOT" ]]; then
+  REL=""
+elif [[ "$SENSOR_DIR" == "$TEST_ROOT"/* ]]; then
+  REL="${SENSOR_DIR#"$TEST_ROOT"/}"
+else
+  REL=""   # test_data 밖의 입력은 outputs 최상위에 저장
+fi
+OUTSUB="/workspace/outputs${REL:+/$REL}"
+mkdir -p "$OUTSUB"
+
+LABEL_OUT="$OUTSUB/${BASE}_labeled.csv"
+SMOOTH_OUT="$OUTSUB/${BASE}_labeled_smoothed.csv"
+VIEWER_OUT="$OUTSUB/${BASE}_viewer.html"
 
 echo "=============================="
 echo " 오토 레이블링 파이프라인"
@@ -28,7 +43,7 @@ echo " 신뢰도 임계치: $THRESHOLD"
 echo "------------------------------"
 
 echo "[1/3] 오토레이블링 실행 중..."
-python /workspace/auto_label.py --input "$SENSOR" --threshold "$THRESHOLD"
+python /workspace/auto_label.py --input "$SENSOR" --threshold "$THRESHOLD" --output-dir "$OUTSUB"
 
 echo "[2/3] 필터링 + 소리 처리 중..."
 python /workspace/postprocess.py \

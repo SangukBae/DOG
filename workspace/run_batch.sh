@@ -2,8 +2,9 @@
 # test_data/ 하위의 모든 CSV+MP4 쌍을 재귀 탐색해 오토라벨링 파이프라인 일괄 실행
 # 사용법: bash run_batch.sh [root_dir=/workspace/test_data] [threshold=0.7]
 #
-# 출력은 outputs/ 가 평탄하므로 파일명 충돌을 막기 위해
-# <날짜>_<피험자>_<원본이름> 형태(BASE)로 라벨/뷰어를 생성한다.
+# 출력은 입력의 하위폴더 구조를 그대로 유지한다.
+#   test_data/260521/B/20260521_124753.csv → outputs/260521/B/20260521_124753_*.{csv,html}
+# (root 바로 아래 파일은 outputs/ 최상위에 저장)
 
 set -u
 
@@ -23,16 +24,17 @@ for csv in "${CSVS[@]}"; do
   stem=$(basename "$csv" .csv)
   video="$dir/$stem.mp4"
 
-  # test_data/<날짜>/<피험자>/<stem> → <날짜>_<피험자>_<stem> 로 고유화
-  rel=${dir#$ROOT/}
-  prefix=$(echo "$rel" | tr '/' '_')
-  base="${prefix}_${stem}"
+  # 입력 하위경로(root 기준) → 동일 구조를 outputs 아래에 생성
+  if [ "$dir" = "$ROOT" ]; then rel=""; else rel=${dir#"$ROOT"/}; fi
+  outsub="$OUT${rel:+/$rel}"
+  mkdir -p "$outsub"
 
-  label_out="$OUT/${base}_labeled.csv"
-  viewer_out="$OUT/${base}_viewer.html"
+  label_out="$outsub/${stem}_labeled.csv"
+  smooth_out="$outsub/${stem}_labeled_smoothed.csv"
+  viewer_out="$outsub/${stem}_viewer.html"
 
   echo "------------------------------------------------------------"
-  echo "[$i/$total] $rel/$stem"
+  echo "[$i/$total] ${rel:+$rel/}$stem"
 
   if [ ! -f "$video" ]; then
     echo "  ⚠ 짝 영상 없음: $video → 건너뜀"
@@ -43,18 +45,22 @@ for csv in "${CSVS[@]}"; do
     skip=$((skip+1)); continue
   fi
 
-  if python /workspace/auto_label.py --input "$csv" --threshold "$THRESHOLD" \
-     && python /workspace/postprocess.py --input "$OUT/${stem}_labeled.csv" \
-          --min-duration 1.0 --smooth-window 0.5 --protect-conf 0.85 --video "$video" \
-     && cp -f "$OUT/${stem}_labeled_smoothed.csv" "$label_out" \
-     && python /workspace/make_viewer.py \
-          --sensor "$csv" --label "$label_out" --video "$video" \
-          --output "$viewer_out" --threshold "$THRESHOLD"; then
-    rm -f "$OUT/${stem}_labeled.csv" "$OUT/${stem}_labeled_smoothed.csv"   # 고유화 이름만 남김
-    echo "  완료 → $viewer_out"
-    ok=$((ok+1))
+  # 후처리 성공 시 smoothed 를, 실패 시 labeled 원본을 뷰어 입력으로 사용
+  if python /workspace/auto_label.py --input "$csv" --threshold "$THRESHOLD" --output-dir "$outsub"; then
+    python /workspace/postprocess.py --input "$label_out" \
+      --min-duration 1.0 --smooth-window 0.5 --protect-conf 0.85 --video "$video" || true
+    if [ -f "$smooth_out" ]; then viewer_label="$smooth_out"; else viewer_label="$label_out"; fi
+    if python /workspace/make_viewer.py \
+         --sensor "$csv" --label "$viewer_label" --video "$video" \
+         --output "$viewer_out" --threshold "$THRESHOLD"; then
+      echo "  완료 → $viewer_out"
+      ok=$((ok+1))
+    else
+      echo "  ✗ 뷰어 생성 실패: ${rel:+$rel/}$stem"
+      fail=$((fail+1))
+    fi
   else
-    echo "  ✗ 실패: $rel/$stem"
+    echo "  ✗ 오토레이블링 실패: ${rel:+$rel/}$stem"
     fail=$((fail+1))
   fi
 done
