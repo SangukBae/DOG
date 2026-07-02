@@ -310,8 +310,8 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
       </div>
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:360px">
-      <span>하위폴더 (선택) — outputs/&lt;여기&gt;/ 아래에 저장, 비우면 최상위</span>
-      <input class="file-input" type="text" id="subdirInput" placeholder="예: 260521/B">
+      <span>하위폴더 — 폴더째 드래그하면 자동 인식 (필요 시 수정, 비우면 최상위)</span>
+      <input class="file-input" type="text" id="subdirInput" placeholder="폴더 드래그 시 자동 · 예: 260521/B">
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:240px">
       <span>신뢰도 임계값 (이 값 미만 → Unlabeled)</span>
@@ -420,12 +420,12 @@ function assignDropped(files) {{
     dt.items.add(f);
     document.getElementById(target).files = dt.files;
     if (isCsv) sensorSet = true; else videoSet = true;
-    // 폴더째 드래그해서 상대경로가 있으면 하위폴더 자동 채움 (best-effort)
-    const rp = f.webkitRelativePath || '';
+    // 폴더째 드래그하면 파일의 상대경로에서 하위폴더를 자동 인식(입력 불필요)
+    const rp = f.webkitRelativePath || f._rel || '';
     if (isCsv && rp.includes('/')) {{
       const sd = rp.slice(0, rp.lastIndexOf('/'));
       const inp = document.getElementById('subdirInput');
-      if (inp && !inp.value.trim()) inp.value = sd;
+      if (inp) inp.value = sd;   // 드래그한 폴더 구조로 덮어씀
     }}
   }}
   const prog = document.getElementById('progress');
@@ -448,8 +448,37 @@ const _uploadBox = document.getElementById('uploadBox');
   if (ev === 'dragleave' && _uploadBox.contains(e.relatedTarget)) return;
   _uploadBox.classList.remove('dragover');
 }}));
-_uploadBox.addEventListener('drop', e => {{
-  if (e.dataTransfer && e.dataTransfer.files.length) assignDropped(e.dataTransfer.files);
+// 디렉터리 엔트리를 재귀로 읽어 File 목록 반환 (fullPath로 상대경로를 _rel에 태깅)
+function _readEntry(entry) {{
+  return new Promise(resolve => {{
+    if (entry.isFile) {{
+      entry.file(f => {{ f._rel = entry.fullPath.replace(/^\\//, ''); resolve([f]); }}, () => resolve([]));
+    }} else if (entry.isDirectory) {{
+      const reader = entry.createReader();
+      const acc = [];
+      const readBatch = () => reader.readEntries(ents => {{
+        if (!ents.length) {{
+          Promise.all(acc.map(_readEntry)).then(nested => resolve(nested.flat()));
+        }} else {{ acc.push(...ents); readBatch(); }}
+      }}, () => resolve([]));
+      readBatch();
+    }} else resolve([]);
+  }});
+}}
+
+// 폴더를 드롭하면 안의 CSV/MP4를 자동 인식하고 하위폴더를 자동 설정
+_uploadBox.addEventListener('drop', async e => {{
+  const items = e.dataTransfer && e.dataTransfer.items;
+  const entries = [];
+  if (items && items.length && items[0].webkitGetAsEntry) {{
+    for (const it of items) {{ const en = it.webkitGetAsEntry && it.webkitGetAsEntry(); if (en) entries.push(en); }}
+  }}
+  if (entries.some(en => en.isDirectory)) {{
+    const nested = await Promise.all(entries.map(_readEntry));
+    assignDropped(nested.flat());
+  }} else if (e.dataTransfer.files.length) {{
+    assignDropped(e.dataTransfer.files);
+  }}
 }});
 // 페이지 전체로 떨어뜨렸을 때 브라우저가 파일을 열어버리는 기본 동작 방지
 ['dragover','drop'].forEach(ev => window.addEventListener(ev, e => {{
