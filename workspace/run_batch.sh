@@ -18,15 +18,15 @@ mkdir -p "$OUT"
 
 collect_csvs() {
   if [ "$ROOT" = "$WORK_ROOT" ]; then
-    find "$WORK_ROOT" -mindepth 2 -type f -name '*.csv' \
+    find -L "$WORK_ROOT" -mindepth 2 -type f -name '*.csv' \
       ! -path "$OUT/*" \
       ! -path "$TEST_ROOT/*" \
       ! -name '*_labeled.csv' \
       ! -name '*_labeled_smoothed.csv' \
       ! -name '*_labeled_reviewed.csv' \
-      | awk -F/ '$3 ~ /^[0-9]{6}$/ {print}'
+      | grep -E '^/workspace/[0-9]{6}/'
   else
-    find "$ROOT" -type f -name '*.csv' \
+    find -L "$ROOT" -type f -name '*.csv' \
       ! -name '*_labeled.csv' \
       ! -name '*_labeled_smoothed.csv' \
       ! -name '*_labeled_reviewed.csv'
