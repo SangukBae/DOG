@@ -490,17 +490,18 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
 .vid-btn{{background:rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer}}
 .vid-btn:hover{{background:rgba(0,0,0,0.85)}}
 
-/* 영상 우측 상단 레이블 오버레이 */
-.video-label-overlay{{
-  position:absolute;top:14px;right:14px;
-  background:rgba(0,0,0,0.72);
-  border:1px solid rgba(255,255,255,0.15);
-  border-radius:10px;padding:10px 16px;
-  text-align:right;pointer-events:none;
-  backdrop-filter:blur(4px);
+/* 현재 프레임 레이블 바 (영상과 배속 선택 영역 사이, 불투명, 라벨 색으로 변함) */
+.now-label-bar{{
+  display:flex;align-items:baseline;gap:16px;
+  padding:16px 22px;
+  background:#161616;
+  border-top:1px solid #222;
+  flex-shrink:0;
+  min-height:64px;
+  transition:background 0.15s;
 }}
-.now-label{{font-size:22px;font-weight:700;letter-spacing:0.3px;line-height:1.2}}
-.now-conf{{font-size:13px;color:rgba(255,255,255,0.6);margin-top:3px}}
+.now-label{{font-size:30px;font-weight:800;letter-spacing:0.3px;line-height:1.1;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,0.45)}}
+.now-conf{{font-size:15px;color:rgba(255,255,255,0.85);text-shadow:0 1px 3px rgba(0,0,0,0.4)}}
 
 /* 사이드 패널 — 키워서 잘 보이게 */
 .side-panel{{flex:1;background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}}
@@ -627,14 +628,17 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
 .save-modal-btn{{padding:8px 20px;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500}}
 
 /* 스크롤바 */
-.tl-scroll::-webkit-scrollbar{{height:4px}}
-.tl-scroll::-webkit-scrollbar-track{{background:var(--bg)}}
-.tl-scroll::-webkit-scrollbar-thumb{{background:var(--border2);border-radius:2px}}
-.seg-list-wrap::-webkit-scrollbar{{width:4px}}
+.tl-scroll::-webkit-scrollbar{{height:14px}}
+.tl-scroll::-webkit-scrollbar-track{{background:#0d0d0d;border-top:1px solid var(--border)}}
+.tl-scroll::-webkit-scrollbar-thumb{{background:#5a5a5a;border-radius:7px;border:3px solid #0d0d0d;min-width:40px}}
+.tl-scroll::-webkit-scrollbar-thumb:hover{{background:#787878}}
+.tl-scroll{{scrollbar-width:auto;scrollbar-color:#5a5a5a #0d0d0d}}
+.seg-list-wrap::-webkit-scrollbar{{width:10px}}
 .seg-list-wrap::-webkit-scrollbar-track{{background:transparent}}
-.seg-list-wrap::-webkit-scrollbar-thumb{{background:var(--border2);border-radius:2px}}
-.modal-body::-webkit-scrollbar{{width:4px}}
-.modal-body::-webkit-scrollbar-thumb{{background:var(--border2);border-radius:2px}}
+.seg-list-wrap::-webkit-scrollbar-thumb{{background:#4a4a4a;border-radius:5px;border:2px solid var(--bg2)}}
+.seg-list-wrap::-webkit-scrollbar-thumb:hover{{background:#666}}
+.modal-body::-webkit-scrollbar{{width:8px}}
+.modal-body::-webkit-scrollbar-thumb{{background:#4a4a4a;border-radius:4px}}
 
 .shortcut-bar{{background:var(--bg);border-top:1px solid var(--border);padding:6px 14px;font-size:11px;color:var(--text2);flex-shrink:0}}
 </style>
@@ -685,16 +689,17 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
       </div>
       <div class="video-wrap" id="videoWrap">
         <video id="vid" controls style="display:none"></video>
-        <div class="video-label-overlay">
-          <div class="now-label" id="nowLabel" style="color:#fff">—</div>
-          <div class="now-conf" id="nowConf"></div>
-        </div>
         <div class="video-controls-overlay">
           <button class="vid-btn" onclick="vidZoom(1.25)">＋</button>
           <button class="vid-btn" onclick="vidZoom(0.8)">－</button>
           <button class="vid-btn" onclick="vidFit()">Fit</button>
           <button class="vid-btn" onclick="vidFull()">⛶</button>
         </div>
+      </div>
+      <!-- 현재 프레임 레이블: 영상과 배속 선택 영역 사이 고정 바 -->
+      <div class="now-label-bar" id="nowLabelBar">
+        <span class="now-label" id="nowLabel">—</span>
+        <span class="now-conf" id="nowConf"></span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;padding:7px 10px;background:#0a0a0a;border-top:1px solid #222">
         <span style="font-size:11px;color:#555;margin-right:4px">배속</span>
@@ -1000,6 +1005,18 @@ function getLabelTextColor(label) {{
   if(G_NEGATIVE.has(label)) return '#ff6b6b';  // 빨간색 (부정)
   if(label==='미분류')       return '#888888';  // 회색 (미분류)
   return '#ffffff';                              // 흰색 (긍정)
+}}
+// 배경색 밝기에 따라 검정/흰색 글자 자동 선택 (색칠된 구간 막대 위 가독성 확보)
+function getContrastText(hex) {{
+  if(!hex) return '#fff';
+  const c = hex.replace('#','');
+  if(c.length < 6) return '#fff';
+  const r = parseInt(c.substr(0,2),16),
+        g = parseInt(c.substr(2,2),16),
+        b = parseInt(c.substr(4,2),16);
+  // 상대 휘도 (0~1). 밝은 배경(노랑/주황 등)이면 검정 글자
+  const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
+  return lum > 0.6 ? '#111' : '#fff';
 }}
 
 // ── ID 탭 + 동적 Tier 생성 ───────────────────────────────────────────────
@@ -1570,10 +1587,15 @@ function updatePlayheads(){{
     if(idx>=0){{
       const s=tier2Segs[idx];
       document.getElementById('nowLabel').textContent=s.label;
-      document.getElementById('nowLabel').style.color=getLabelTextColor(s.label);
+      document.getElementById('nowLabel').style.color='#fff';
       document.getElementById('nowConf').textContent='conf: '+s.conf.toFixed(3)+(s.low_conf?' ⚠':'');
+      document.getElementById('nowLabelBar').style.background=COLORS[s.label]||'#161616';
       const row=document.getElementById('srow_'+idx);
       if(row){{row.classList.add('playing');row.scrollIntoView({{block:'nearest'}});}}
+    }} else {{
+      document.getElementById('nowLabel').textContent='—';
+      document.getElementById('nowConf').textContent='';
+      document.getElementById('nowLabelBar').style.background='#161616';
     }}
   }}
   if(!vid.paused){{
@@ -1597,7 +1619,7 @@ function renderTier1(){{
     d.style.width=Math.max(0.1,(s.end_ms-s.start_ms)/TOTAL_MS*100)+'%';
     d.style.background=(COLORS[s.label]||'#999')+'99';
     d.style.border='none';
-    d.innerHTML=`<span class="ann-text" style="color:${{getLabelTextColor(s.label)}}">${{s.label}}</span>`;
+    d.innerHTML=`<span class="ann-text" style="color:${{getContrastText(COLORS[s.label]||'#999')}}">${{s.label}}</span>`;
     addTooltip(d,s);el.appendChild(d);
   }});
 }}
@@ -1613,7 +1635,7 @@ function renderTier2(){{
     d.style.left=(s.start_ms/TOTAL_MS*100)+'%';
     d.style.width=Math.max(0.1,(s.end_ms-s.start_ms)/TOTAL_MS*100)+'%';
     d.style.background=COLORS[s.label]||'#999';
-    d.innerHTML=`<span class="ann-text" style="color:${{getLabelTextColor(s.label)}}">${{s.label}}</span>`;
+    d.innerHTML=`<span class="ann-text" style="color:${{getContrastText(COLORS[s.label]||'#999')}}">${{s.label}}</span>`;
     d.addEventListener('click',e=>{{
       const inner=document.getElementById('tlInner');
       const rect=inner.getBoundingClientRect();
@@ -2115,6 +2137,41 @@ buildIdTabs();
 renderRuler();renderAll();renderSegList();updateProgress();applyZoom();
 autoRestore();  // 서버에 저장된 이전 검수 내역이 있으면 복원
 window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();}});
+
+// ── 타임라인 드래그 스크롤 ────────────────────────────────────────────────
+// 타임라인을 마우스로 끌어 좌우 이동. 드래그한 경우 클릭(이동/선택)은 무시.
+(function(){{
+  const tl = document.getElementById('tlScroll');
+  if (!tl) return;
+  let isDragging = false, startX = 0, scrollLeft = 0, moved = false;
+  tl.style.cursor = 'grab';
+  tl.addEventListener('mousedown', e => {{
+    if (e.button !== 0) return;
+    isDragging = true;
+    moved = false;
+    startX = e.pageX - tl.offsetLeft;
+    scrollLeft = tl.scrollLeft;
+    tl.style.cursor = 'grabbing';
+  }});
+  window.addEventListener('mouseup', () => {{
+    isDragging = false;
+    tl.style.cursor = 'grab';
+  }});
+  tl.addEventListener('mousemove', e => {{
+    if (!isDragging) return;
+    const x = e.pageX - tl.offsetLeft;
+    const walk = (x - startX) * 1.5;
+    if (Math.abs(walk) > 3) {{
+      moved = true;
+      e.stopPropagation();
+      tl.scrollLeft = scrollLeft - walk;
+    }}
+  }});
+  // 드래그 중이면 클릭 이벤트 차단 (capture 단계에서 가로채 seek/select 방지)
+  tl.addEventListener('click', e => {{
+    if (moved) {{ e.stopPropagation(); moved = false; }}
+  }}, true);
+}})();
 </script>
 </body>
 </html>"""
