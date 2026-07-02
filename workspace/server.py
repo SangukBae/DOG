@@ -409,7 +409,7 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
 
   <!-- 파이프라인 실행 -->
   <div class="upload-box" id="uploadBox">
-    <div class="upload-title">새 파일 검수 시작 <span style="font-size:11px;color:#555;font-weight:400">— 파일 또는 폴더를 넣을 수 있습니다</span></div>
+    <div class="upload-title">새 파일 검수 시작 <span style="font-size:11px;color:#555;font-weight:400">— 센서 CSV와 영상 파일을 선택하세요</span></div>
     <div class="upload-row">
       <div class="file-label">
         <span>센서 CSV</span>
@@ -419,14 +419,6 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
         <span>영상 MP4</span>
         <input class="file-input" type="file" id="videoFile" accept=".mp4,video/*">
       </div>
-    </div>
-    <div class="file-label" style="margin-bottom:14px;max-width:420px">
-      <span>폴더 선택 — 브라우저가 허용하는 상대경로만 읽어 하위폴더를 자동 설정</span>
-      <input class="file-input" type="file" id="folderInput" webkitdirectory directory multiple>
-    </div>
-    <div class="file-label" style="margin-bottom:14px;max-width:360px">
-      <span>하위폴더 — 폴더째 드래그하면 자동 인식 (필요 시 수정, 비우면 최상위)</span>
-      <input class="file-input" type="text" id="subdirInput" placeholder="폴더 드래그 시 자동 · 예: 260521/B">
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:240px">
       <span>신뢰도 임계값 (이 값 미만 → Unlabeled)</span>
@@ -456,7 +448,6 @@ async function runPipeline() {{
   const video  = document.getElementById('videoFile').files[0];
   const threshold = document.getElementById('thresholdInput').value || '0.7';
   const audioDbMargin = document.getElementById('audioDbMargin').value || '12';
-  const subdir = document.getElementById('subdirInput').value.trim();
   if (!sensor || !video) {{ alert('센서 CSV와 영상 파일을 모두 선택하세요.'); return; }}
 
   const btn  = document.getElementById('runBtn');
@@ -472,9 +463,6 @@ async function runPipeline() {{
   fd.append('video',  video);
   fd.append('threshold', threshold);
   fd.append('audio_db_margin', audioDbMargin);
-  fd.append('subdir', subdir);
-  fd.append('sensor_relpath', sensor.webkitRelativePath || sensor._rel || '');
-  fd.append('video_relpath',  video.webkitRelativePath  || video._rel  || '');
 
   try {{
     const r    = await fetch('/upload', {{method:'POST', body:fd}});
@@ -537,9 +525,6 @@ function assignDropped(files) {{
     dt.items.add(f);
     document.getElementById(target).files = dt.files;
     if (isCsv) sensorSet = true; else videoSet = true;
-    // 폴더째 드래그/선택하면 파일의 상대경로에서 하위폴더를 자동 인식(절대경로는 브라우저가 제공하지 않음)
-    const rp = f.webkitRelativePath || f._rel || '';
-    if (isCsv) applyRelativeSubdir(rp);
   }}
   const prog = document.getElementById('progress');
   if (sensorSet || videoSet) {{
@@ -549,14 +534,6 @@ function assignDropped(files) {{
       [sensorSet ? '센서 CSV' : null, videoSet ? '영상' : null].filter(Boolean).join(', ') +
       ' — ▶ 버튼을 누르세요.';
   }}
-}}
-
-function applyRelativeSubdir(relPath) {{
-  if (!relPath || !relPath.includes('/')) return;
-  const normalized = relPath.replace(/^\\//, '');
-  const sd = normalized.slice(0, normalized.lastIndexOf('/'));
-  const inp = document.getElementById('subdirInput');
-  if (inp && sd) inp.value = sd;
 }}
 
 const _uploadBox = document.getElementById('uploadBox');
@@ -605,21 +582,6 @@ _uploadBox.addEventListener('drop', async e => {{
 ['dragover','drop'].forEach(ev => window.addEventListener(ev, e => {{
   if (!_uploadBox.contains(e.target)) e.preventDefault();
 }}));
-
-document.getElementById('folderInput').addEventListener('change', e => {{
-  const files = Array.from(e.target.files || []);
-  if (files.length) assignDropped(files);
-}});
-
-document.getElementById('sensorFile').addEventListener('change', e => {{
-  const f = e.target.files && e.target.files[0];
-  if (f) applyRelativeSubdir(f.webkitRelativePath || f._rel || '');
-}});
-
-document.getElementById('videoFile').addEventListener('change', e => {{
-  const f = e.target.files && e.target.files[0];
-  if (f) applyRelativeSubdir(f.webkitRelativePath || f._rel || '');
-}});
 </script>
 </body>
 </html>'''
