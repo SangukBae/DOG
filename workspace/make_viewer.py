@@ -1129,17 +1129,24 @@ function vidFull() {{
   if(vid.requestFullscreen) vid.requestFullscreen();
 }}
 
-// 영상 하단 라벨 바 폭을 실제 표시되는 영상 프레임 폭에 맞춤 (object-fit:contain 기준)
+// 영상 하단 라벨 바 폭 조정: 패널의 70%를 상한으로 항상 좁게 가운데 정렬하되,
+// 영상 표시 폭이 그보다 좁으면(세로 영상 등) 영상 폭에 맞춘다.
+const LABEL_BAR_MAX_RATIO = 0.7;
 function syncLabelBarWidth() {{
   const bar = document.getElementById('nowLabelBar');
   const wrap = document.getElementById('videoWrap');
   if (!bar || !wrap) return;
-  if (!vid.videoWidth || !vid.videoHeight) {{ bar.style.width = ''; bar.style.margin = ''; return; }}
   const cw = wrap.clientWidth, ch = wrap.clientHeight;
-  const scale = Math.min(cw / vid.videoWidth, ch / vid.videoHeight);
-  const dispW = Math.round(vid.videoWidth * scale);
-  bar.style.width = dispW + 'px';
-  bar.style.margin = '0 auto';   // 가운데 정렬 → 영상 프레임과 좌우 정렬
+  if (!cw) return;
+  const cap = cw * LABEL_BAR_MAX_RATIO;      // 패널 폭의 70% 상한
+  let target = cap;
+  if (vid.videoWidth && vid.videoHeight) {{
+    const scale = Math.min(cw / vid.videoWidth, ch / vid.videoHeight);
+    const dispW = vid.videoWidth * scale;    // object-fit:contain 기준 실제 표시 폭
+    target = Math.min(dispW, cap);           // 영상이 더 좁으면 영상에, 넓으면 70%로 제한
+  }}
+  bar.style.width = Math.round(target) + 'px';
+  bar.style.margin = '0 auto';               // 가운데 정렬
 }}
 
 const videoWrap = document.getElementById('videoWrap');
@@ -1422,6 +1429,7 @@ function updateAudioPlayhead() {{
   drawAudioTrain();
   drawLabelTrain();
   updateAudioCenterLabel();
+  syncLabelBarWidth();   // 재생/탐색 시에도 라벨 바 폭을 영상 폭에 계속 맞춤
 }}
 
 // 현재 재생 위치(중앙선)가 지나는 dB 구간/소리 구간의 timestamp 표시
@@ -2211,7 +2219,7 @@ window.addEventListener('beforeunload', () => {{
 autoFormatTC(startI);autoFormatTC(endI);
 buildTiers();
 buildIdTabs();
-renderRuler();renderAll();renderSegList();updateProgress();applyZoom();
+renderRuler();renderAll();renderSegList();updateProgress();applyZoom();syncLabelBarWidth();
 autoRestore();  // 서버에 저장된 이전 검수 내역이 있으면 복원
 window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();drawLabelTrain();syncLabelBarWidth();}});
 
