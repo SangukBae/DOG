@@ -32,14 +32,9 @@ app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED, allow_methods=["*"], 
 
 @app.on_event("startup")
 async def startup_event():
-    """서버 시작 시 캐시된 viewer HTML 삭제 → /viewer 요청 시 항상 최신 make_viewer.py로 재생성.
-    목록(get_file_list)은 영속되는 라벨 CSV 기준이라 삭제해도 비지 않는다."""
-    deleted = 0
-    for f in OUTPUTS_DIR.rglob('*_viewer.html'):
-        f.unlink(missing_ok=True)
-        deleted += 1
-    if deleted:
-        print(f"[서버 시작] 캐시 viewer HTML {deleted}개 삭제 → 열람 시 최신 버전으로 재생성")
+    """서버 시작 훅.
+    viewer HTML은 /viewer 요청 시 항상 재생성하므로 startup 시 별도 삭제는 하지 않는다."""
+    return None
 
 WORKSPACE     = Path('/workspace')
 OUTPUTS_DIR   = WORKSPACE / 'outputs'
@@ -74,6 +69,28 @@ def _save_video_map():
         VIDEO_MAP_FILE.write_text(json.dumps(video_map, ensure_ascii=False), encoding='utf-8')
     except Exception as e:
         print(f"[video_map 저장 실패] {e}")
+
+
+def bootstrap_workspace_outputs():
+    """python /workspace/server.py 실행 시 workspace 날짜폴더를 먼저 일괄 처리한다.
+    이미 결과가 있는 항목은 run_batch.sh가 건너뛴다."""
+    enabled = os.environ.get('SERVER_BOOTSTRAP_BATCH', '1').strip().lower()
+    if enabled in ('0', 'false', 'no', 'off'):
+        print("[시작 전 배치] 비활성화됨 (SERVER_BOOTSTRAP_BATCH)")
+        return
+
+    root = os.environ.get('SERVER_BOOTSTRAP_ROOT', '/workspace').strip() or '/workspace'
+    threshold = os.environ.get('SERVER_BOOTSTRAP_THRESHOLD', '0.7').strip() or '0.7'
+    print(f"[시작 전 배치] root={root}, threshold={threshold}")
+    r = subprocess.run(
+        ['bash', '/workspace/run_batch.sh', root, threshold],
+        capture_output=False,
+        text=True,
+    )
+    if r.returncode != 0:
+        print(f"[시작 전 배치] 실패(returncode={r.returncode}) → 서버는 계속 실행합니다.")
+    else:
+        print("[시작 전 배치] 완료")
 
 
 video_map = _load_video_map()   # {sensor_base: video_filename} — 디스크에서 복원
@@ -859,6 +876,7 @@ async def save_result(base: str, request: Request, sub: str = ''):
 
 
 if __name__ == '__main__':
+    bootstrap_workspace_outputs()
     print("==============================")
     print(" 오토 레이블링 검수 서버")
     print(" http://localhost:8888")
