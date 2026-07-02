@@ -1870,6 +1870,7 @@ function applyEdit(){{
   const snapped=s0!==startMs||e0!==endMs;
   setFeedback(`✓ ${{newLabel}} | ${{msToTC(startMs)}} ~ ${{msToTC(endMs)}}${{snapped?' [스냅]':''}}`,COLORS[newLabel]||'var(--green)');
   renderAll();renderSegList();updateModCounter();
+  markAutosaveDirty();
 
   // ── 적용 후 자동 다음 구간으로 이동 ──────────────────────────────────
   // 종료시간 → 다음 구간 시작시간으로 자동 설정
@@ -1906,6 +1907,7 @@ function splitAtCurrent(){{
   tier2Segs.splice(idx,1,left,right);
   ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=curMs&&r.time_ms<s.end_ms)r.pred_label=right.label;}});
   renderAll();renderSegList();updateModCounter();
+  markAutosaveDirty();
   setFeedback(`✂ 분할 완료: ${{msToTC(curMs)}}에서 나눔`,COLORS[s.label]||'var(--green)');
   selectSeg(idx);
 }}
@@ -1927,6 +1929,7 @@ function mergeSelected(){{
     conf:Math.round(avgConf*1000)/1000,low_conf:run.some(x=>x.low_conf)}};
   tier2Segs.splice(lo,run.length,merged);
   renderAll();renderSegList();updateModCounter();
+  markAutosaveDirty();
   setFeedback(`⊕ ${{run.length}}개 구간 병합 완료: ${{label}} ${{msToTC(first.start_ms)}}~${{msToTC(last.end_ms)}}`,COLORS[label]||'var(--green)');
   selectSeg(lo);
 }}
@@ -1949,6 +1952,7 @@ function undoLast(){{
   tier2Segs=history.pop();
   tier2Segs.forEach(s=>{{ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=s.start_ms&&r.time_ms<=s.end_ms)r.pred_label=s.label;}});}});
   renderAll();renderSegList();updateModCounter();setFeedback('↩ 되돌렸습니다','var(--yellow)');
+  markAutosaveDirty();
 }}
 function jumpLowConf(){{
   const cur=vid.currentTime*1000;
@@ -2052,7 +2056,9 @@ function loadCsvBackup(input) {{
     try {{
       // 서버 복원과 동일한 로직으로 timestamp 단위 전체 복원 → 중간저장분을 그대로 이어서 검수
       const changed = applyReviewedCsv(e.target.result);
+      _autosaveLastCsv = null;
       renderAll(); renderSegList(); updateModCounter(); updateProgress();
+      markAutosaveDirty();
       setFeedback(`✓ CSV 불러오기 완료 — ${{changed}}개 프레임 복구됨`, 'var(--green)');
       input.value = '';
     }} catch(err) {{
@@ -2168,6 +2174,8 @@ function autoRestore() {{
     .then(d => {{
       if (!d || !d.exists || !d.csv) return;
       const changed = applyReviewedCsv(d.csv);
+      _autosaveLastCsv = d.csv;
+      _autosaveDirty = false;
       renderAll(); renderSegList(); updateModCounter(); updateProgress();
       const when = d.updated ? new Date(d.updated * 1000).toLocaleString('ko-KR') : '';
       setFeedback(`↩ 이전 검수 내역 복원됨 (${{changed}}개 구간 수정) ${{when}}`, 'var(--green)');
@@ -2175,32 +2183,70 @@ function autoRestore() {{
     .catch(() => {{}});  // 서버 없으면 무시 (CLI 방식)
 }}
 
-// ── 자동저장 (30초마다) ──────────────────────────────────────────────────
-function autoSave() {{
+// ── 자동저장 (변경 감지 기반) ────────────────────────────────────────────
+const AUTOSAVE_DEBOUNCE_MS = 1500;
+let _autosaveTimer = null;
+let _autosaveDirty = false;
+let _autosaveInFlight = false;
+let _autosaveLastCsv = null;
+
+function setAutosaveStatus(text, color='var(--text3)') {{
+  const el = document.getElementById('autosaveStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = color;
+}}
+
+function markAutosaveDirty() {{
+  _autosaveDirty = true;
+  setAutosaveStatus('변경됨 · 저장 대기', 'var(--yellow)');
+  if (_autosaveTimer) clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(() => autoSave(), AUTOSAVE_DEBOUNCE_MS);
+}}
+
+function autoSave(force=false) {{
+  if (_autosaveTimer) {{
+    clearTimeout(_autosaveTimer);
+    _autosaveTimer = null;
+  }}
+  if (_autosaveInFlight) return;
+  if (!_autosaveDirty && !force) return;
   const csv = buildReviewedCsv();
+  if (!force && csv === _autosaveLastCsv) {{
+    _autosaveDirty = false;
+    setAutosaveStatus('변경 없음');
+    return;
+  }}
+  _autosaveInFlight = true;
+  setAutosaveStatus('저장 중...', 'var(--accent)');
   // 서버에 autosave 요청 (서버 방식일 때만)
   fetch('/autosave/' + OUT_NAME.replace('_labeled_reviewed.csv','') + _subQ(), {{
     method: 'POST',
     headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{csv}})
   }}).then(() => {{
+    _autosaveLastCsv = csv;
+    _autosaveDirty = false;
     const t = new Date().toLocaleTimeString('ko-KR', {{hour:'2-digit',minute:'2-digit',second:'2-digit'}});
-    document.getElementById('autosaveStatus').textContent = '저장 ' + t;
-    document.getElementById('autosaveStatus').style.color = 'var(--green)';
+    setAutosaveStatus('저장 ' + t, 'var(--green)');
     setTimeout(() => {{
-      document.getElementById('autosaveStatus').style.color = 'var(--text3)';
+      if (!_autosaveDirty) setAutosaveStatus('변경 없음');
     }}, 3000);
   }}).catch(() => {{
-    // 서버 없으면 무시 (CLI 방식)
+    setAutosaveStatus('자동저장 실패', 'var(--red)');
+  }}).finally(() => {{
+    _autosaveInFlight = false;
+    if (_autosaveDirty) {{
+      if (_autosaveTimer) clearTimeout(_autosaveTimer);
+      _autosaveTimer = setTimeout(() => autoSave(), AUTOSAVE_DEBOUNCE_MS);
+    }}
   }});
 }}
 
-// 자동저장 30초마다 실행
-setInterval(autoSave, 30000);
-
-// 페이지 닫기/새로고침 직전 마지막 저장 보장 (30초 주기 사이 유실 방지)
+// 페이지 닫기/새로고침 직전 마지막 저장 보장
 window.addEventListener('beforeunload', () => {{
   try {{
+    if (!_autosaveDirty) return;
     const csv = buildReviewedCsv();
     const base = OUT_NAME.replace('_labeled_reviewed.csv', '');
     const blob = new Blob([JSON.stringify({{csv}})], {{type: 'application/json'}});
