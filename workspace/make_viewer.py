@@ -492,7 +492,7 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
 
 /* 현재 프레임 레이블 바 (영상과 배속 선택 영역 사이, 불투명, 라벨 색으로 변함) */
 .now-label-bar{{
-  display:flex;align-items:baseline;gap:16px;
+  display:flex;align-items:baseline;justify-content:center;gap:16px;
   padding:16px 22px;
   background:#161616;
   border-top:1px solid #222;
@@ -717,6 +717,15 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
         <div id="audioTrainWrap" style="position:relative;height:36px;background:#0a0a0a;border-radius:4px;overflow:hidden;cursor:pointer">
           <canvas id="audioTrainCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
           <div id="audioCenterLine" style="position:absolute;top:0;left:50%;width:2px;height:100%;background:#fff;opacity:0.5;pointer-events:none;z-index:10"></div>
+        </div>
+        <!-- Reviewed 라벨 트랙: 오디오 바와 동일하게 좌로 흘러감 (중앙=현재 시각) -->
+        <div style="display:flex;align-items:center;gap:8px;margin:8px 0 4px">
+          <span style="font-size:10px;color:#888;font-weight:600;min-width:36px">LABEL</span>
+          <span id="labelTrainNow" style="font-size:10px;color:#fff;background:#1a1a1a;padding:2px 8px;border-radius:3px">—</span>
+        </div>
+        <div id="labelTrainWrap" style="position:relative;height:28px;background:#0a0a0a;border-radius:4px;overflow:hidden;cursor:pointer">
+          <canvas id="labelTrainCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+          <div style="position:absolute;top:0;left:50%;width:2px;height:100%;background:#fff;opacity:0.5;pointer-events:none;z-index:10"></div>
         </div>
       </div>
     </div>
@@ -1238,6 +1247,7 @@ function dbToColor(db) {{
 
 function renderAudioTier() {{
   drawAudioTrain();
+  drawLabelTrain();
 
   // 캔버스 클릭 → 클릭 위치의 시간으로 이동 + 해당 막대 구간 표시
   const wrap = document.getElementById('audioTrainWrap');
@@ -1343,9 +1353,61 @@ function drawAudioTrain() {{
   }}
 }}
 
+// Reviewed 라벨 트랙: 오디오 바와 동일한 좌표계(중앙=현재)로 라벨 구간을 흘려보냄
+function drawLabelTrain() {{
+  const canvas = document.getElementById('labelTrainCanvas');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if (W === 0 || H === 0) return;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  const curMs = Math.round(vid.currentTime * 1000);
+  const msPerPx = TRAIN_WINDOW_MS / W;
+  let nowLabel = '—';
+
+  tier2Segs.forEach(s => {{
+    const dtStart = s.start_ms - curMs;
+    const dtEnd   = s.end_ms   - curMs;
+    if (dtEnd < -TRAIN_WINDOW_MS/2 || dtStart > TRAIN_WINDOW_MS/2) return;
+    const x1 = Math.max(0, W/2 + dtStart / msPerPx);
+    const x2 = Math.min(W, W/2 + dtEnd / msPerPx);
+    const bw = Math.max(1, x2 - x1);
+    const color = COLORS[s.label] || '#999';
+    const past  = dtEnd < 0;                 // 지나간 구간은 어둡게 (오디오 바와 동일)
+    ctx.globalAlpha = past ? 0.4 : 0.9;
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, 2, bw, H - 4);
+    // 구간 폭이 충분하면 라벨명 표기 (보이는 영역으로 클리핑)
+    if (bw > 28) {{
+      ctx.globalAlpha = 1;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(x1, 0, bw, H); ctx.clip();
+      ctx.fillStyle = getContrastText(color);
+      ctx.font = '11px sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(s.label, x1 + 5, H / 2);
+      ctx.restore();
+    }}
+    if (curMs >= s.start_ms && curMs <= s.end_ms) nowLabel = s.label;
+  }});
+  ctx.globalAlpha = 1;
+
+  const nowEl = document.getElementById('labelTrainNow');
+  if (nowEl) {{
+    nowEl.textContent = nowLabel;
+    const c = nowLabel !== '—' ? (COLORS[nowLabel] || '#1a1a1a') : '#1a1a1a';
+    nowEl.style.background = c;
+    nowEl.style.color = nowLabel !== '—' ? getContrastText(c) : '#fff';
+  }}
+}}
+
 // 재생 위치 업데이트 → train UI 다시 그림
 function updateAudioPlayhead() {{
   drawAudioTrain();
+  drawLabelTrain();
   updateAudioCenterLabel();
 }}
 
@@ -1715,6 +1777,7 @@ function selectSeg(idx){{
   document.getElementById('srow_'+idx)?.scrollIntoView({{block:'nearest'}});
   renderTier2();
   drawAudioTrain();   // 선택 구간 범위를 오디오 영역에 회색 직사각형으로 즉시 표시
+  drawLabelTrain();   // 라벨 트랙도 즉시 갱신 (수정/선택 반영)
 }}
 
 // ── 구간 목록 ────────────────────────────────────────────────────────────
@@ -2136,7 +2199,7 @@ buildTiers();
 buildIdTabs();
 renderRuler();renderAll();renderSegList();updateProgress();applyZoom();
 autoRestore();  // 서버에 저장된 이전 검수 내역이 있으면 복원
-window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();}});
+window.addEventListener('resize',()=>{{renderRuler();renderAll();drawAudioTrain();drawLabelTrain();}});
 
 // ── 타임라인 드래그 스크롤 ────────────────────────────────────────────────
 // 타임라인을 마우스로 끌어 좌우 이동. 드래그한 경우 클릭(이동/선택)은 무시.
