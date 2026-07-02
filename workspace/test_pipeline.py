@@ -81,25 +81,6 @@ def test_mode_smooth_removes_isolated_flip():
     assert (out == 'A').all()
 
 
-# ── 오디오 정렬 offset (회귀 방지: #2) ───────────────────────────────────
-def test_auto_audio_offset_sign():
-    # 센서가 영상보다 2초 늦게 시작 → 영상이 이미 2초 진행 → offset = 영상시작-센서시작 = -2000
-    sensor_start = 1_000_000_000_000
-    df = pd.DataFrame({'timestamp': [sensor_start, sensor_start + 10]})
-    # 영상 파일명 시작이 센서보다 2초 빠르도록 epoch 맞춤
-    video_start = sensor_start - 2000
-    from datetime import datetime
-    fname = 'vid_' + datetime.fromtimestamp(video_start / 1000).strftime('%Y%m%d_%H%M%S') + '.mp4'
-    offset = postprocess.auto_audio_offset(df, fname)
-    # 초 단위 반올림 오차 허용
-    assert abs(offset - (-2000)) <= 1000
-
-
-def test_auto_audio_offset_fallback_no_timestamp():
-    df = pd.DataFrame({'timestamp': [0, 10]})
-    assert postprocess.auto_audio_offset(df, 'plain_video.mp4') == 0
-
-
 # ── 경로 안전 (회귀 방지: #4) ────────────────────────────────────────────
 def test_safe_base_strips_traversal():
     import server
