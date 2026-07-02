@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import subprocess
+import shutil
 from datetime import datetime
 import re
 from pathlib import Path
@@ -34,7 +35,7 @@ async def startup_event():
     """서버 시작 시 캐시된 viewer HTML 삭제 → /viewer 요청 시 항상 최신 make_viewer.py로 재생성.
     목록(get_file_list)은 영속되는 라벨 CSV 기준이라 삭제해도 비지 않는다."""
     deleted = 0
-    for f in OUTPUTS_DIR.glob('*_viewer.html'):
+    for f in OUTPUTS_DIR.rglob('*_viewer.html'):
         f.unlink(missing_ok=True)
         deleted += 1
     if deleted:
@@ -44,6 +45,7 @@ WORKSPACE     = Path('/workspace')
 OUTPUTS_DIR   = WORKSPACE / 'outputs'
 TEST_DATA_DIR = WORKSPACE / 'test_data'
 VIDEO_MAP_FILE = OUTPUTS_DIR / '.video_map.json'   # 재시작 후에도 센서↔영상 매핑 유지
+DATE_DIR_RE   = re.compile(r'^\d{6}$')
 
 # 파이프라인 실행 상태 추적
 pipeline_status = {}      # {job_id: {status, message, viewer_url}}  (휘발성)
@@ -75,6 +77,102 @@ def _save_video_map():
 
 
 video_map = _load_video_map()   # {sensor_base: video_filename} — 디스크에서 복원
+
+
+def is_date_dir_name(name: str) -> bool:
+    return bool(DATE_DIR_RE.fullmatch(name or ''))
+
+
+def data_roots():
+    """원본 센서/영상 탐색 루트. 기존 test_data와 workspace 날짜폴더를 모두 지원."""
+    roots = []
+    if TEST_DATA_DIR.exists():
+        roots.append(TEST_DATA_DIR)
+    for p in sorted(WORKSPACE.iterdir()):
+        if p.is_dir() and is_date_dir_name(p.name):
+            roots.append(p)
+    return roots
+
+
+def workspace_relpath(path: Path) -> str:
+    """workspace 내부 파일은 상대경로로 저장해 중복 파일명 충돌을 피한다."""
+    resolved = path.resolve()
+    base = WORKSPACE.resolve()
+    if resolved == base or base in resolved.parents:
+        return str(resolved.relative_to(base)).replace('\\', '/')
+    return path.name
+
+
+def find_by_name(name: str):
+    """data roots 전체에서 basename 기준 첫 파일 검색."""
+    target = Path(name).name
+    for root in data_roots():
+        found = next(root.rglob(target), None)
+        if found:
+            return found
+    return None
+
+
+def resolve_mapped_path(stored: str):
+    """video_map에 저장된 상대경로나 예전 basename을 실제 파일로 복원."""
+    if not stored:
+        return None
+    rel = str(stored).replace('\\', '/').strip('/')
+    if rel:
+        cand = (WORKSPACE / rel).resolve()
+        base = WORKSPACE.resolve()
+        if cand.exists() and (cand == base or base in cand.parents):
+            return cand
+    return find_by_name(Path(stored).name)
+
+
+def infer_output_subdir(path: Path) -> str:
+    """입력 경로에서 outputs 하위 저장경로를 추론한다."""
+    resolved = path.resolve()
+    test_base = TEST_DATA_DIR.resolve()
+    if TEST_DATA_DIR.exists() and (resolved == test_base or test_base in resolved.parents):
+        rel = resolved.parent.relative_to(test_base)
+        return '' if str(rel) == '.' else str(rel).replace('\\', '/')
+
+    base = WORKSPACE.resolve()
+    if resolved == base or base in resolved.parents:
+        rel = resolved.relative_to(base)
+        if rel.parts and is_date_dir_name(rel.parts[0]):
+            parent = rel.parent
+            return '' if str(parent) == '.' else str(parent).replace('\\', '/')
+    return ''
+
+
+def upload_save_dir(rel: str) -> Path:
+    """업로드 저장 위치 결정.
+    날짜폴더로 시작하면 workspace 날짜구조를, 아니면 test_data를 사용한다.
+    """
+    rel = safe_rel(rel)
+    if rel:
+        top = rel.split('/', 1)[0]
+        if is_date_dir_name(top):
+            return (WORKSPACE / rel).resolve()
+    return ((TEST_DATA_DIR / rel) if rel else TEST_DATA_DIR).resolve()
+
+
+def find_sensor_csv(sensor_base: str):
+    """원본 센서 CSV만 찾는다. labeled/reviewed CSV는 제외."""
+    pattern = f'*{sensor_base}*.csv'
+    for root in data_roots():
+        found = next((p for p in root.rglob(pattern) if 'labeled' not in p.stem), None)
+        if found:
+            return found
+    return None
+
+
+def find_video_by_sensor_base(sensor_base: str):
+    ts_match = re.search(r'(\d{8}_\d{6})', sensor_base)
+    pat = f'*{ts_match.group(1)}*.mp4' if ts_match else f'*{sensor_base}*.mp4'
+    for root in data_roots():
+        found = next(root.rglob(pat), None)
+        if found:
+            return found
+    return None
 
 
 def safe_under(base_dir: Path, name: str) -> Path:
@@ -109,6 +207,14 @@ def safe_rel(sub: str) -> str:
     return sub
 
 
+def rel_parent(path_str: str) -> str:
+    """브라우저가 준 상대경로에서 부모 하위폴더만 추출해 검증."""
+    if not path_str:
+        return ''
+    parent = str(Path(path_str.replace('\\', '/')).parent).replace('\\', '/')
+    return '' if parent in ('', '.') else safe_rel(parent)
+
+
 def reviewed_paths(base: str, sub: str = ''):
     """검수결과(csv)/통계(json) 저장 경로를 하위폴더까지 반영해 반환."""
     base = safe_base(base)
@@ -133,6 +239,8 @@ def get_file_list():
         _add(p, '_labeled.csv')
     for p in OUTPUTS_DIR.rglob('*_labeled_smoothed.csv'):
         _add(p, '_labeled_smoothed.csv')
+    for p in OUTPUTS_DIR.rglob('*_labeled_reviewed.csv'):
+        _add(p, '_labeled_reviewed.csv')
 
     items = []
     for (rel, base), mtime in sorted(found.items(), key=lambda kv: kv[1], reverse=True):
@@ -153,6 +261,7 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
                  threshold: float = 0.7, audio_db_margin: float = 12, out_subdir: str = ''):
     """백그라운드에서 파이프라인 실행 (out_subdir: outputs 하위폴더 → 입력 구조 유지)"""
     try:
+        out_subdir = safe_rel(out_subdir) or infer_output_subdir(sensor_path)
         base       = sensor_path.stem
         out_dir    = (OUTPUTS_DIR / out_subdir) if out_subdir else OUTPUTS_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +270,9 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
         if label_path:
             # 이미 레이블 파일 있으면 오토레이블링/후처리 스킵 (검수된 데이터 보존)
             pipeline_status[job_id] = {'status': 'running', 'message': '[1/1] 검수 뷰어 생성 중...', 'viewer_url': None}
-            label_out = label_path
+            label_out = out_dir / f'{base}_labeled_reviewed.csv'
+            if label_path.resolve() != label_out.resolve():
+                shutil.copy2(label_path, label_out)
         else:
             # 1단계: 오토 레이블링
             pipeline_status[job_id] = {'status': 'running', 'message': '[1/3] 오토 레이블링 중...', 'viewer_url': None}
@@ -298,7 +409,7 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
 
   <!-- 파이프라인 실행 -->
   <div class="upload-box" id="uploadBox">
-    <div class="upload-title">새 파일 검수 시작 <span style="font-size:11px;color:#555;font-weight:400">— 파일을 끌어다 놓아도 됩니다</span></div>
+    <div class="upload-title">새 파일 검수 시작 <span style="font-size:11px;color:#555;font-weight:400">— 파일 또는 폴더를 넣을 수 있습니다</span></div>
     <div class="upload-row">
       <div class="file-label">
         <span>센서 CSV</span>
@@ -308,6 +419,10 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
         <span>영상 MP4</span>
         <input class="file-input" type="file" id="videoFile" accept=".mp4,video/*">
       </div>
+    </div>
+    <div class="file-label" style="margin-bottom:14px;max-width:420px">
+      <span>폴더 선택 — 브라우저가 허용하는 상대경로만 읽어 하위폴더를 자동 설정</span>
+      <input class="file-input" type="file" id="folderInput" webkitdirectory directory multiple>
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:360px">
       <span>하위폴더 — 폴더째 드래그하면 자동 인식 (필요 시 수정, 비우면 최상위)</span>
@@ -358,6 +473,8 @@ async function runPipeline() {{
   fd.append('threshold', threshold);
   fd.append('audio_db_margin', audioDbMargin);
   fd.append('subdir', subdir);
+  fd.append('sensor_relpath', sensor.webkitRelativePath || sensor._rel || '');
+  fd.append('video_relpath',  video.webkitRelativePath  || video._rel  || '');
 
   try {{
     const r    = await fetch('/upload', {{method:'POST', body:fd}});
@@ -420,13 +537,9 @@ function assignDropped(files) {{
     dt.items.add(f);
     document.getElementById(target).files = dt.files;
     if (isCsv) sensorSet = true; else videoSet = true;
-    // 폴더째 드래그하면 파일의 상대경로에서 하위폴더를 자동 인식(입력 불필요)
+    // 폴더째 드래그/선택하면 파일의 상대경로에서 하위폴더를 자동 인식(절대경로는 브라우저가 제공하지 않음)
     const rp = f.webkitRelativePath || f._rel || '';
-    if (isCsv && rp.includes('/')) {{
-      const sd = rp.slice(0, rp.lastIndexOf('/'));
-      const inp = document.getElementById('subdirInput');
-      if (inp) inp.value = sd;   // 드래그한 폴더 구조로 덮어씀
-    }}
+    if (isCsv) applyRelativeSubdir(rp);
   }}
   const prog = document.getElementById('progress');
   if (sensorSet || videoSet) {{
@@ -436,6 +549,14 @@ function assignDropped(files) {{
       [sensorSet ? '센서 CSV' : null, videoSet ? '영상' : null].filter(Boolean).join(', ') +
       ' — ▶ 버튼을 누르세요.';
   }}
+}}
+
+function applyRelativeSubdir(relPath) {{
+  if (!relPath || !relPath.includes('/')) return;
+  const normalized = relPath.replace(/^\\//, '');
+  const sd = normalized.slice(0, normalized.lastIndexOf('/'));
+  const inp = document.getElementById('subdirInput');
+  if (inp && sd) inp.value = sd;
 }}
 
 const _uploadBox = document.getElementById('uploadBox');
@@ -484,6 +605,21 @@ _uploadBox.addEventListener('drop', async e => {{
 ['dragover','drop'].forEach(ev => window.addEventListener(ev, e => {{
   if (!_uploadBox.contains(e.target)) e.preventDefault();
 }}));
+
+document.getElementById('folderInput').addEventListener('change', e => {{
+  const files = Array.from(e.target.files || []);
+  if (files.length) assignDropped(files);
+}});
+
+document.getElementById('sensorFile').addEventListener('change', e => {{
+  const f = e.target.files && e.target.files[0];
+  if (f) applyRelativeSubdir(f.webkitRelativePath || f._rel || '');
+}});
+
+document.getElementById('videoFile').addEventListener('change', e => {{
+  const f = e.target.files && e.target.files[0];
+  if (f) applyRelativeSubdir(f.webkitRelativePath || f._rel || '');
+}});
 </script>
 </body>
 </html>'''
@@ -495,12 +631,16 @@ async def upload(background_tasks: BackgroundTasks,
                  video:  UploadFile = File(...),
                  threshold: float = Form(0.7),
                  audio_db_margin: float = Form(12),
-                 subdir: str = Form('')):
+                 subdir: str = Form(''),
+                 sensor_relpath: str = Form(''),
+                 video_relpath: str = Form('')):
     """파일 업로드 + 파이프라인 백그라운드 실행 (subdir: outputs/test_data 하위폴더)"""
     try:
-        # 하위폴더(경로 탈출 방지) → test_data/<subdir>/ 아래에 저장
+        # 하위폴더(경로 탈출 방지) → 날짜폴더면 workspace 구조 유지, 아니면 test_data 사용
         rel = safe_rel(subdir)
-        save_dir = (TEST_DATA_DIR / rel) if rel else TEST_DATA_DIR
+        if not rel:
+            rel = rel_parent(sensor_relpath) or rel_parent(video_relpath)
+        save_dir = upload_save_dir(rel)
         save_dir.mkdir(parents=True, exist_ok=True)
         sensor_path = safe_under(save_dir, sensor.filename or 'sensor.csv')
         video_path  = safe_under(save_dir, video.filename or 'video.mp4')
@@ -538,7 +678,7 @@ async def upload(background_tasks: BackgroundTasks,
 
         # 센서-영상 매핑 저장 (디스크 영속화 → 재시작 후에도 영상 탐색 가능)
         sensor_base = sensor_path.stem
-        video_map[sensor_base] = video_path.name
+        video_map[sensor_base] = workspace_relpath(video_path)
         _save_video_map()
 
         # 파일 종류 자동 감지 (reviewed CSV인지 원본 센서 CSV인지)
@@ -549,12 +689,10 @@ async def upload(background_tasks: BackgroundTasks,
                 label_path = sensor_path
                 ts_match = re.search(r'(\d{8}_\d{6})', sensor_path.stem)
                 if ts_match:
-                    ts = ts_match.group(1)
-                    orig = next((f for f in TEST_DATA_DIR.rglob(f'*{ts}*.csv')
-                                 if 'labeled' not in f.stem), None)
+                    orig = find_sensor_csv(ts_match.group(1))
                     if orig:
                         sensor_path = orig
-                        video_map[orig.stem] = video_path.name
+                        video_map[orig.stem] = workspace_relpath(video_path)
                         _save_video_map()
                 print(f"레이블 CSV 감지: {label_path.name} → 오토레이블링 스킵")
         except Exception:
@@ -593,20 +731,18 @@ async def viewer(filename: str, sub: str = ''):
     base        = filename.replace('_viewer.html', '')
     sensor_base = base.replace('_labeled', '')
 
-    # 영상 파일 찾기 (매핑 우선, 없으면 test_data 전체에서 재귀 탐색)
+    # 영상 파일 찾기 (매핑 우선, 없으면 등록된 data roots 전체에서 재귀 탐색)
     video = None
     if sensor_base in video_map:
-        video = TEST_DATA_DIR / Path(video_map[sensor_base]).name
-        if not video.exists():
-            video = None
+        video = resolve_mapped_path(video_map[sensor_base])
     if video is None:
-        ts_match = re.search(r'(\d{8}_\d{6})', sensor_base)
-        pat = f'*{ts_match.group(1)}*.mp4' if ts_match else f'*{sensor_base}*.mp4'
-        video = next(TEST_DATA_DIR.rglob(pat), None)
+        video = find_video_by_sensor_base(sensor_base)
 
-    # 센서/라벨 파일 찾기 (센서는 test_data 재귀, 라벨은 해당 하위폴더에서 smoothed > labeled 순)
-    sensor = next(TEST_DATA_DIR.rglob(f'*{sensor_base}*.csv'), None)
-    label = label_dir / f'{sensor_base}_labeled_smoothed.csv'
+    # 센서/라벨 파일 찾기 (센서는 data roots 재귀, 라벨은 해당 하위폴더에서 reviewed > smoothed > labeled 순)
+    sensor = find_sensor_csv(sensor_base)
+    label = label_dir / f'{sensor_base}_labeled_reviewed.csv'
+    if not label.exists():
+        label = label_dir / f'{sensor_base}_labeled_smoothed.csv'
     if not label.exists():
         label = label_dir / f'{sensor_base}_labeled.csv'
     if not label.exists():
@@ -668,15 +804,9 @@ async def viewer(filename: str, sub: str = ''):
 
 @app.get('/video/{filename}')
 async def stream_video(filename: str, request: Request):
-    """영상 스트리밍 (Range 요청 지원). test_data 하위폴더까지 파일명으로 재귀 탐색."""
-    path = safe_under(TEST_DATA_DIR, filename)
-    if not path.exists():
-        # 하위폴더(예: test_data/260521/B/)에 있는 경우 파일명으로 재귀 탐색
-        name = Path(filename).name
-        found = next(TEST_DATA_DIR.rglob(name), None)
-        if found and found.resolve().is_relative_to(TEST_DATA_DIR.resolve()):
-            path = found
-    if not path.exists():
+    """영상 스트리밍 (Range 요청 지원). data roots 전체에서 파일명으로 재귀 탐색."""
+    path = find_by_name(safe_base(filename))
+    if not path or not path.exists():
         raise HTTPException(404, '영상 없음')
 
     file_size    = path.stat().st_size

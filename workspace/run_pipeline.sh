@@ -16,16 +16,27 @@ fi
 
 BASE=$(basename "$SENSOR" .csv)
 
-# 입력이 test_data 하위폴더에 있으면 그 구조를 outputs 아래에 그대로 유지
-# 예: /workspace/test_data/260521/B/xxx.csv → /workspace/outputs/260521/B/
+# 입력이 test_data 하위폴더에 있으면 기존 구조를 유지하고,
+# workspace 날짜폴더(예: /workspace/260521/260521/B/xxx.csv)면
+# outputs/260521/260521/B/ 아래에 저장한다.
 TEST_ROOT=/workspace/test_data
+WORK_ROOT=/workspace
+DATE_RE='^[0-9]{6}$'
 SENSOR_DIR=$(cd "$(dirname "$SENSOR")" && pwd)
 if [[ "$SENSOR_DIR" == "$TEST_ROOT" ]]; then
   REL=""
 elif [[ "$SENSOR_DIR" == "$TEST_ROOT"/* ]]; then
   REL="${SENSOR_DIR#"$TEST_ROOT"/}"
+elif [[ "$SENSOR_DIR" == "$WORK_ROOT"/* ]]; then
+  REL_CAND="${SENSOR_DIR#"$WORK_ROOT"/}"
+  TOP="${REL_CAND%%/*}"
+  if [[ "$TOP" =~ $DATE_RE ]]; then
+    REL="$REL_CAND"
+  else
+    REL=""
+  fi
 else
-  REL=""   # test_data 밖의 입력은 outputs 최상위에 저장
+  REL=""   # 지원 경로 밖의 입력은 outputs 최상위에 저장
 fi
 OUTSUB="/workspace/outputs${REL:+/$REL}"
 mkdir -p "$OUTSUB"

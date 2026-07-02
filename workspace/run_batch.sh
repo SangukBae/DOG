@@ -1,19 +1,39 @@
 #!/bin/bash
-# test_data/ 하위의 모든 CSV+MP4 쌍을 재귀 탐색해 오토라벨링 파이프라인 일괄 실행
-# 사용법: bash run_batch.sh [root_dir=/workspace/test_data] [threshold=0.7]
+# workspace 날짜폴더(기본) 또는 임의 root 하위의 모든 CSV+MP4 쌍을 재귀 탐색해 오토라벨링 파이프라인 일괄 실행
+# 사용법: bash run_batch.sh [root_dir=/workspace] [threshold=0.7]
 #
 # 출력은 입력의 하위폴더 구조를 그대로 유지한다.
-#   test_data/260521/B/20260521_124753.csv → outputs/260521/B/20260521_124753_*.{csv,html}
-# (root 바로 아래 파일은 outputs/ 최상위에 저장)
+#   /workspace/260521/260521/B/20260521_124753.csv → outputs/260521/260521/B/20260521_124753_*.{csv,html}
+#   /workspace/test_data/260521/B/20260521_124753.csv → outputs/260521/B/20260521_124753_*.{csv,html}
 
 set -u
 
-ROOT=${1:-/workspace/test_data}
+ROOT=${1:-/workspace}
 THRESHOLD=${2:-0.7}
 OUT=/workspace/outputs
+WORK_ROOT=/workspace
+TEST_ROOT=/workspace/test_data
+DATE_RE='^[0-9]{6}$'
 mkdir -p "$OUT"
 
-mapfile -t CSVS < <(find "$ROOT" -type f -name '*.csv' ! -name '*_labeled.csv' | sort)
+collect_csvs() {
+  if [ "$ROOT" = "$WORK_ROOT" ]; then
+    find "$WORK_ROOT" -mindepth 2 -type f -name '*.csv' \
+      ! -path "$OUT/*" \
+      ! -path "$TEST_ROOT/*" \
+      ! -name '*_labeled.csv' \
+      ! -name '*_labeled_smoothed.csv' \
+      ! -name '*_labeled_reviewed.csv' \
+      | awk -F/ '$3 ~ /^[0-9]{6}$/ {print}'
+  else
+    find "$ROOT" -type f -name '*.csv' \
+      ! -name '*_labeled.csv' \
+      ! -name '*_labeled_smoothed.csv' \
+      ! -name '*_labeled_reviewed.csv'
+  fi
+}
+
+mapfile -t CSVS < <(collect_csvs | sort)
 total=${#CSVS[@]}
 echo "대상 CSV: $total 개 (root=$ROOT, threshold=$THRESHOLD)"
 
@@ -24,8 +44,26 @@ for csv in "${CSVS[@]}"; do
   stem=$(basename "$csv" .csv)
   video="$dir/$stem.mp4"
 
-  # 입력 하위경로(root 기준) → 동일 구조를 outputs 아래에 생성
-  if [ "$dir" = "$ROOT" ]; then rel=""; else rel=${dir#"$ROOT"/}; fi
+  # 입력 하위경로 → 동일 구조를 outputs 아래에 생성
+  if [[ "$dir" == "$TEST_ROOT" ]]; then
+    rel=""
+  elif [[ "$dir" == "$TEST_ROOT"/* ]]; then
+    rel=${dir#"$TEST_ROOT"/}
+  elif [[ "$dir" == "$WORK_ROOT"/* ]]; then
+    rel_cand=${dir#"$WORK_ROOT"/}
+    top=${rel_cand%%/*}
+    if [[ "$top" =~ $DATE_RE ]]; then
+      rel="$rel_cand"
+    elif [ "$dir" = "$ROOT" ]; then
+      rel=""
+    else
+      rel=${dir#"$ROOT"/}
+    fi
+  elif [ "$dir" = "$ROOT" ]; then
+    rel=""
+  else
+    rel=${dir#"$ROOT"/}
+  fi
   outsub="$OUT${rel:+/$rel}"
   mkdir -p "$outsub"
 

@@ -100,6 +100,20 @@ def test_safe_under_blocks_escape():
     assert p2.parent == server.TEST_DATA_DIR.resolve()
 
 
+def test_infer_output_subdir_for_test_data_and_workspace_dates():
+    import server
+    from pathlib import Path
+    assert server.infer_output_subdir(Path('/workspace/test_data/260521/B/sample.csv')) == '260521/B'
+    assert server.infer_output_subdir(Path('/workspace/260521/260521/B/sample.csv')) == '260521/260521/B'
+
+
+def test_upload_save_dir_preserves_workspace_date_structure():
+    import server
+    from pathlib import Path
+    assert server.upload_save_dir('260531/260531/A') == Path('/workspace/260531/260531/A').resolve()
+    assert server.upload_save_dir('demo/subdir') == Path('/workspace/test_data/demo/subdir').resolve()
+
+
 if __name__ == '__main__':
     fns = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     passed = 0
