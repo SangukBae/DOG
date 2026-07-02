@@ -71,28 +71,6 @@ def _save_video_map():
         print(f"[video_map 저장 실패] {e}")
 
 
-def bootstrap_workspace_outputs():
-    """python /workspace/server.py 실행 시 workspace 날짜폴더를 먼저 일괄 처리한다.
-    이미 결과가 있는 항목은 run_batch.sh가 건너뛴다."""
-    enabled = os.environ.get('SERVER_BOOTSTRAP_BATCH', '1').strip().lower()
-    if enabled in ('0', 'false', 'no', 'off'):
-        print("[시작 전 배치] 비활성화됨 (SERVER_BOOTSTRAP_BATCH)")
-        return
-
-    root = os.environ.get('SERVER_BOOTSTRAP_ROOT', '/workspace').strip() or '/workspace'
-    threshold = os.environ.get('SERVER_BOOTSTRAP_THRESHOLD', '0.7').strip() or '0.7'
-    print(f"[시작 전 배치] root={root}, threshold={threshold}")
-    r = subprocess.run(
-        ['bash', '/workspace/run_batch.sh', root, threshold],
-        capture_output=False,
-        text=True,
-    )
-    if r.returncode != 0:
-        print(f"[시작 전 배치] 실패(returncode={r.returncode}) → 서버는 계속 실행합니다.")
-    else:
-        print("[시작 전 배치] 완료")
-
-
 video_map = _load_video_map()   # {sensor_base: video_filename} — 디스크에서 복원
 
 
@@ -105,6 +83,15 @@ def data_roots():
     roots = []
     if TEST_DATA_DIR.exists():
         roots.append(TEST_DATA_DIR)
+    for p in sorted(WORKSPACE.iterdir()):
+        if p.is_dir() and is_date_dir_name(p.name):
+            roots.append(p)
+    return roots
+
+
+def workspace_date_roots():
+    """workspace 아래 날짜폴더만 반환 (test_data 제외)."""
+    roots = []
     for p in sorted(WORKSPACE.iterdir()):
         if p.is_dir() and is_date_dir_name(p.name):
             roots.append(p)
@@ -176,6 +163,16 @@ def find_sensor_csv(sensor_base: str):
     """원본 센서 CSV만 찾는다. labeled/reviewed CSV는 제외."""
     pattern = f'*{sensor_base}*.csv'
     for root in data_roots():
+        found = next((p for p in root.rglob(pattern) if 'labeled' not in p.stem), None)
+        if found:
+            return found
+    return None
+
+
+def find_workspace_sensor_csv(sensor_base: str):
+    """workspace 날짜폴더에서만 원본 센서 CSV를 찾는다."""
+    pattern = f'*{sensor_base}*.csv'
+    for root in workspace_date_roots():
         found = next((p for p in root.rglob(pattern) if 'labeled' not in p.stem), None)
         if found:
             return found
@@ -655,6 +652,12 @@ async def upload(background_tasks: BackgroundTasks,
                 orig_video.unlink(missing_ok=True)     # 원본 제거(디스크 절약)
             print(f"hevc → H.264 변환 완료: {video_path.name} (원본 삭제)")
 
+        # 업로드 파일이 workspace 원본 데이터와 매칭되면 outputs 저장 하위경로를 그 구조로 맞춘다.
+        if not rel:
+            orig_sensor = find_workspace_sensor_csv(sensor_path.stem)
+            if orig_sensor:
+                rel = infer_output_subdir(orig_sensor)
+
         # 센서-영상 매핑 저장 (디스크 영속화 → 재시작 후에도 영상 탐색 가능)
         sensor_base = sensor_path.stem
         video_map[sensor_base] = workspace_relpath(video_path)
@@ -668,8 +671,9 @@ async def upload(background_tasks: BackgroundTasks,
                 label_path = sensor_path
                 ts_match = re.search(r'(\d{8}_\d{6})', sensor_path.stem)
                 if ts_match:
-                    orig = find_sensor_csv(ts_match.group(1))
+                    orig = find_workspace_sensor_csv(ts_match.group(1))
                     if orig:
+                        rel = infer_output_subdir(orig)
                         sensor_path = orig
                         video_map[orig.stem] = workspace_relpath(video_path)
                         _save_video_map()
@@ -876,7 +880,6 @@ async def save_result(base: str, request: Request, sub: str = ''):
 
 
 if __name__ == '__main__':
-    bootstrap_workspace_outputs()
     print("==============================")
     print(" 오토 레이블링 검수 서버")
     print(" http://localhost:8888")
