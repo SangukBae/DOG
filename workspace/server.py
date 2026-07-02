@@ -28,6 +28,18 @@ app = FastAPI(title="오토 레이블링 검수 서버")
 _ALLOWED = [o for o in os.environ.get('ALLOW_ORIGINS', '').split(',') if o]
 app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED, allow_methods=["*"], allow_headers=["*"])
 
+
+@app.on_event("startup")
+async def startup_event():
+    """서버 시작 시 캐시된 viewer HTML 삭제 → /viewer 요청 시 항상 최신 make_viewer.py로 재생성.
+    목록(get_file_list)은 영속되는 라벨 CSV 기준이라 삭제해도 비지 않는다."""
+    deleted = 0
+    for f in OUTPUTS_DIR.glob('*_viewer.html'):
+        f.unlink(missing_ok=True)
+        deleted += 1
+    if deleted:
+        print(f"[서버 시작] 캐시 viewer HTML {deleted}개 삭제 → 열람 시 최신 버전으로 재생성")
+
 WORKSPACE     = Path('/workspace')
 OUTPUTS_DIR   = WORKSPACE / 'outputs'
 TEST_DATA_DIR = WORKSPACE / 'test_data'
@@ -84,17 +96,29 @@ def safe_base(name: str) -> str:
 
 
 def get_file_list():
+    # viewer HTML은 시작 시 삭제되므로, 영속되는 라벨 CSV 기준으로 목록을 구성한다.
+    bases = set()
+    for p in OUTPUTS_DIR.glob('*_labeled.csv'):
+        bases.add(p.stem.replace('_labeled', ''))
+    for p in OUTPUTS_DIR.glob('*_labeled_smoothed.csv'):
+        bases.add(p.stem.replace('_labeled_smoothed', ''))
+
+    def rep_mtime(base):
+        """정렬/표시용 대표 mtime (smoothed > labeled 순)."""
+        for name in (f'{base}_labeled_smoothed.csv', f'{base}_labeled.csv'):
+            f = OUTPUTS_DIR / name
+            if f.exists():
+                return f.stat().st_mtime
+        return 0
+
     items = []
-    htmls = sorted(OUTPUTS_DIR.glob('*_viewer.html'), key=lambda x: x.stat().st_mtime, reverse=True)
-    for html in htmls:
-        base     = html.stem.replace('_viewer', '')
+    for base in sorted(bases, key=rep_mtime, reverse=True):
         reviewed = OUTPUTS_DIR / f'{base}_labeled_reviewed.csv'
-        stat     = 'completed' if reviewed.exists() else 'pending'
         items.append({
             'name':     base,
-            'html':     html.name,
-            'status':   stat,
-            'updated':  datetime.fromtimestamp(html.stat().st_mtime).strftime('%Y-%m-%d %H:%M'),
+            'html':     f'{base}_viewer.html',
+            'status':   'completed' if reviewed.exists() else 'pending',
+            'updated':  datetime.fromtimestamp(rep_mtime(base)).strftime('%Y-%m-%d %H:%M'),
         })
     return items
 
@@ -431,8 +455,11 @@ async def upload(background_tasks: BackgroundTasks,
 
         # 코덱 확인 및 H.264 변환 (make_viewer와 공유 로직)
         if get_video_codec(video_path) == 'hevc':
+            orig_video = video_path                    # 변환 후 삭제할 원본 hevc
             video_path = Path(convert_to_h264(video_path))
-            print(f"hevc → H.264 변환 완료: {video_path.name}")
+            if video_path != orig_video:
+                orig_video.unlink(missing_ok=True)     # 원본 제거(디스크 절약)
+            print(f"hevc → H.264 변환 완료: {video_path.name} (원본 삭제)")
 
         # 센서-영상 매핑 저장 (디스크 영속화 → 재시작 후에도 영상 탐색 가능)
         sensor_base = sensor_path.stem
@@ -479,16 +506,16 @@ async def status(job_id: str):
 
 @app.get('/viewer/{filename}', response_class=HTMLResponse)
 async def viewer(filename: str):
-    """뷰어 HTML 반환 (영상 스트리밍 URL로 교체)"""
+    """뷰어 요청 시 make_viewer.py로 항상 재생성 → 캐시 없이 최신 UI/라벨 반영.
+    (검수 결과는 생성된 HTML의 autoRestore가 /load로 복원하므로 손실 없음)"""
     filename = Path(filename).name
-    path = safe_under(OUTPUTS_DIR, filename)
-    if not path.exists():
-        raise HTTPException(404, '파일 없음')
-
-    html = path.read_text(encoding='utf-8')
+    if not filename.endswith('_viewer.html'):
+        raise HTTPException(400, '잘못된 파일명')
+    viewer_out  = safe_under(OUTPUTS_DIR, filename)
+    base        = filename.replace('_viewer.html', '')
+    sensor_base = base.replace('_labeled', '')
 
     # 영상 파일 찾기 (매핑 우선, 없으면 날짜 패턴으로 찾기)
-    sensor_base = filename.replace('_viewer.html', '').replace('_labeled', '')
     if sensor_base in video_map:
         video = TEST_DATA_DIR / Path(video_map[sensor_base]).name
         if not video.exists():
@@ -501,6 +528,31 @@ async def viewer(filename: str):
         else:
             video = next(TEST_DATA_DIR.glob(f'*{sensor_base}*.mp4'), None)
 
+    # 센서/라벨 파일 찾기 (smoothed > labeled 순)
+    sensor = next(TEST_DATA_DIR.glob(f'*{sensor_base}*.csv'), None)
+    label = OUTPUTS_DIR / f'{sensor_base}_labeled_smoothed.csv'
+    if not label.exists():
+        label = OUTPUTS_DIR / f'{sensor_base}_labeled.csv'
+    if not label.exists():
+        raise HTTPException(404, f'레이블 파일 없음: {sensor_base}')
+    if not sensor:
+        raise HTTPException(404, f'센서 파일 없음: {sensor_base}')
+
+    # make_viewer.py로 재생성 (항상 최신 코드/라벨 반영)
+    r = subprocess.run([
+        'python', '/workspace/make_viewer.py',
+        '--sensor',        str(sensor),
+        '--label',         str(label),
+        '--video',         str(video) if video else '',
+        '--output',        str(viewer_out),
+        '--encoder',       '/workspace/preprocessed/label_encoder.pkl',
+        '--extra-classes', 'Scratching,Licking,Vomiting,Coughing',
+    ], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise HTTPException(500, f'뷰어 생성 실패: {r.stderr[-300:]}')
+
+    html = viewer_out.read_text(encoding='utf-8')
+
     if video:
         video_url = f'/video/{video.name}'
         html = html.replace('<div id="videoPickWrap"', '<div id="videoPickWrap" style="display:none!important"', 1)
@@ -510,7 +562,7 @@ async def viewer(filename: str):
         )
 
     # CSV 저장을 서버로 (stats 선언 이후 교체)
-    base = safe_base(filename.replace('_viewer.html', ''))
+    base = safe_base(base)
     old_save = "hideSaveModal();\n  setFeedback(`\u2713 \uc800\uc7a5 \uc644\ub8cc: ${finalName}`,'var(--green)');\n}"
     new_save = (
         f"fetch('/save/{base}', {{\n"
