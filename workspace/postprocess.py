@@ -20,7 +20,7 @@ import pandas as pd
 
 sys.path.append('/workspace')  # make_viewer.analyze_audio 임포트용 (cwd 무관)
 
-UNCLASSIFIED = '미분류'
+UNCLASSIFIED = 'Unlabeled'
 BARK_LABEL = 'Barking'
 RED_DB_OFFSET = 15   # 뷰어 dbToColor 빨강 기준(AUDIO_THRESHOLD_DB + 15)과 동일
 

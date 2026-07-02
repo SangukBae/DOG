@@ -26,16 +26,16 @@ def test_extract_ts_parses_and_no_dead_code():
 
 
 def test_build_class_colors_unclassified_is_gray():
-    colors = make_viewer.build_class_colors(['Walking', 'Lying', '미분류'])
-    assert colors['미분류'] == make_viewer.UNLABELED_COLOR
+    colors = make_viewer.build_class_colors(['Walking', 'Lying', 'Unlabeled'])
+    assert colors['Unlabeled'] == make_viewer.UNLABELED_COLOR
     assert colors['Walking'] != colors['Lying']
 
 
 def test_build_shortcut_map_digits_for_positive():
-    sc = make_viewer.build_shortcut_map(['Standing', 'Scratching', '미분류'])
+    sc = make_viewer.build_shortcut_map(['Standing', 'Scratching', 'Unlabeled'])
     assert sc['1'] == 'Standing'           # positive → 숫자
     assert 'a' in sc and sc['a'] == 'Scratching'  # negative → 알파벳
-    assert '미분류' in sc.values()
+    assert 'Unlabeled' in sc.values()
 
 
 def test_make_segments_merges_short():

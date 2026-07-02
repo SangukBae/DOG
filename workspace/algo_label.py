@@ -19,7 +19,7 @@ import numpy as np
 # 알고리즘이 담당하는 클래스 (이 5개만 덮어쓰기 후보)
 DOMAIN = ['Lying', 'Standing', 'Walking', 'Running', 'Shaking']
 # 자세(Lying/Standing) 교정을 허용할 DL 원본 라벨 (확신한 미세행동은 보존)
-POSTURE_OVERRIDABLE = {'Lying', 'Standing', '미분류'}
+POSTURE_OVERRIDABLE = {'Lying', 'Standing', 'Unlabeled'}
 GRAVITY = 9.81
 
 # 자가 보정에 사용할 DL 신뢰도 하한
@@ -295,7 +295,7 @@ def algorithmic_correct(df, hz, win_sec=1.0, stride_sec=0.5, verbose=True,
         mean_conf = vote_conf[i, k] / max(vote_cnt[i, k], 1)
         if agree >= OVERRIDE_AGREE and mean_conf >= OVERRIDE_CONF:
             new = DOMAIN[k]
-            # 자세 교정(Lying/Standing)은 DL이 '자세 or 미분류'로 본 프레임에만.
+            # 자세 교정(Lying/Standing)은 DL이 '자세 or Unlabeled'로 본 프레임에만.
             # DL이 확신한 미세행동(Eating/Drinking/Sniffing 등)은 보존 → 머리 숙인
             # 정적 행동이 자세로 잘못 덮이는 것 방지.
             if new in ('Lying', 'Standing') and out[i] not in POSTURE_OVERRIDABLE:

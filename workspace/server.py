@@ -280,7 +280,7 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
       </div>
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:240px">
-      <span>신뢰도 임계값 (이 값 미만 → 미분류)</span>
+      <span>신뢰도 임계값 (이 값 미만 → Unlabeled)</span>
       <input class="file-input" type="number" id="thresholdInput" value="0.7" min="0" max="1" step="0.05">
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:360px">

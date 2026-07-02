@@ -18,7 +18,7 @@ NEGATIVE_CLASSES = {'Scratching','Licking','Vomiting','Coughing'}
 def get_sentiment(label):
     if label in POSITIVE_CLASSES: return 'Positive'
     if label in NEGATIVE_CLASSES: return 'Negative'
-    if label == '미분류':          return 'Background'
+    if label == 'Unlabeled':          return 'Background'
     return 'Positive'
 
 # 기본 색상 팔레트 (클래스 수에 따라 순환)
@@ -37,17 +37,17 @@ RESERVED_COLS = {'timestamp','time_ms','pred_label','confidence','id',
 def build_class_colors(classes):
     """클래스 목록에서 자동으로 색상 할당"""
     colors = {}
-    palette_classes = [c for c in classes if c != '미분류']
+    palette_classes = [c for c in classes if c != 'Unlabeled']
     for i, cls in enumerate(palette_classes):
         colors[cls] = PALETTE[i % len(PALETTE)]
-    colors['미분류'] = UNLABELED_COLOR
+    colors['Unlabeled'] = UNLABELED_COLOR
     return colors
 
 def build_shortcut_map(classes):
     """클래스 목록에서 자동으로 단축키 할당
     긍정 행동: 1~9, 0
     부정 행동: a, b, c, d, ...
-    미분류: e (또는 부정행동 다음 알파벳)
+    Unlabeled: e (또는 부정행동 다음 알파벳)
     """
     num_keys  = list('1234567890')
     alpha_keys = list('abcdefghijklmnopqrstuvwxyz')
@@ -55,7 +55,7 @@ def build_shortcut_map(classes):
     num_i   = 0
     alpha_i = 0
     for cls in classes:
-        if cls == '미분류':
+        if cls == 'Unlabeled':
             continue
         if cls in POSITIVE_CLASSES:
             if num_i < len(num_keys):
@@ -65,9 +65,9 @@ def build_shortcut_map(classes):
             if alpha_i < len(alpha_keys):
                 sc[alpha_keys[alpha_i]] = cls
                 alpha_i += 1
-    if '미분류' in classes:
+    if 'Unlabeled' in classes:
         # 부정행동 다음 알파벳
-        sc[alpha_keys[alpha_i]] = '미분류'
+        sc[alpha_keys[alpha_i]] = 'Unlabeled'
     return sc
 
 def detect_sensor_cols(df):
@@ -280,19 +280,19 @@ def make_elan(sensor_path, label_path, video_path, output_html,
         df = labels.copy()
         # sensor 컬럼명 맞추기
         df['confidence'] = df['confidence'].fillna(0.0)
-        df['pred_label'] = df['pred_label'].fillna('미분류')
+        df['pred_label'] = df['pred_label'].fillna('Unlabeled')
     elif 'pred_label' in labels.columns:
         # labeled CSV: timestamp 기준으로 merge
         merge_cols = ['timestamp','pred_label','confidence']
         merge_cols = [c for c in merge_cols if c in labels.columns]
         df = pd.merge(sensor, labels[merge_cols], on='timestamp', how='left')
-        df['pred_label'] = df['pred_label'].fillna('미분류')
+        df['pred_label'] = df['pred_label'].fillna('Unlabeled')
         df['confidence'] = df['confidence'].fillna(0.0)
     else:
-        # pred_label 없음 → 전부 미분류
-        print("⚠ label CSV에 pred_label 없음 → 전부 미분류 처리")
+        # pred_label 없음 → 전부 Unlabeled
+        print("⚠ label CSV에 pred_label 없음 → 전부 Unlabeled 처리")
         df = sensor.copy()
-        df['pred_label'] = '미분류'
+        df['pred_label'] = 'Unlabeled'
         df['confidence'] = 0.0
 
     # ── 센서 컬럼 자동 감지 ───────────────────────────────────────────────
@@ -315,20 +315,20 @@ def make_elan(sensor_path, label_path, video_path, output_html,
         classes = sorted(df['pred_label'].unique().tolist())
         print(f"CSV에서 감지: {classes}")
 
-    # 미분류는 항상 맨 뒤에 추가
-    classes = [c for c in classes if c != '미분류'] + ['미분류']
+    # Unlabeled는 항상 맨 뒤에 추가
+    classes = [c for c in classes if c != 'Unlabeled'] + ['Unlabeled']
 
-    # extra_classes 추가 (미분류 바로 앞에 삽입)
+    # extra_classes 추가 (Unlabeled 바로 앞에 삽입)
     if extra_classes:
         extras = [c.strip() for c in extra_classes.split(',') if c.strip() and c.strip() not in classes]
-        classes = [c for c in classes if c != '미분류'] + extras + ['미분류']
+        classes = [c for c in classes if c != 'Unlabeled'] + extras + ['Unlabeled']
         print(f"추가 클래스: {extras}")
     # CSV에 있지만 클래스 목록에 없는 값 경고
     csv_classes = set(df['pred_label'].unique())
-    missing = csv_classes - set(classes) - {'미분류'}
+    missing = csv_classes - set(classes) - {'Unlabeled'}
     if missing:
-        print(f"⚠ CSV에 있지만 클래스 목록에 없는 값: {missing} → 미분류로 처리")
-        df.loc[df['pred_label'].isin(missing), 'pred_label'] = '미분류'
+        print(f"⚠ CSV에 있지만 클래스 목록에 없는 값: {missing} → Unlabeled로 처리")
+        df.loc[df['pred_label'].isin(missing), 'pred_label'] = 'Unlabeled'
 
     CLASS_COLORS   = build_class_colors(classes)
     SHORTCUT_MAP   = build_shortcut_map(classes)
@@ -998,12 +998,12 @@ const G_NEGATIVE = new Set(['Scratching','Licking','Vomiting','Coughing']);
 function getSentiment(label) {{
   if(G_POSITIVE.has(label)) return 'Positive';
   if(G_NEGATIVE.has(label)) return 'Negative';
-  if(label==='미분류') return 'Background';
+  if(label==='Unlabeled') return 'Background';
   return 'Positive';
 }}
 function getLabelTextColor(label) {{
   if(G_NEGATIVE.has(label)) return '#ff6b6b';  // 빨간색 (부정)
-  if(label==='미분류')       return '#888888';  // 회색 (미분류)
+  if(label==='Unlabeled')       return '#888888';  // 회색 (Unlabeled)
   return '#ffffff';                              // 흰색 (긍정)
 }}
 // 배경색 밝기에 따라 검정/흰색 글자 자동 선택 (색칠된 구간 막대 위 가독성 확보)

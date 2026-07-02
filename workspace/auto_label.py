@@ -222,10 +222,10 @@ def auto_label(input_path, threshold):
     pred_idx    = all_probs.argmax(axis=1)
     pred_labels = le.inverse_transform(pred_idx).astype(object)
 
-    # ── 신뢰도 임계값 적용: threshold 미만 예측은 미분류 처리 ──
+    # ── 신뢰도 임계값 적용: threshold 미만 예측은 Unlabeled 처리 ──
     low_conf_mask = confidence < threshold
-    pred_labels[low_conf_mask] = '미분류'
-    print(f"\n임계값 {threshold} 적용: {int(low_conf_mask.sum()):,}개 → 미분류")
+    pred_labels[low_conf_mask] = 'Unlabeled'
+    print(f"\n임계값 {threshold} 적용: {int(low_conf_mask.sum()):,}개 → Unlabeled")
 
     # ── 100Hz CSV + 50Hz 모델: 2행씩 같은 레이블 적용 (정보 손실 없음) ──
     if csv_hz == 100 and model_hz == 50:
@@ -270,13 +270,13 @@ def auto_label(input_path, threshold):
     out_path = os.path.join(OUTPUT_DIR, out_name)
     df.to_csv(out_path, index=False)
 
-    unlabeled = (df['pred_label'] == '미분류').sum()
+    unlabeled = (df['pred_label'] == 'Unlabeled').sum()
     print(f"\n결과 요약:")
     print(f"  CSV Hz        : {csv_hz}Hz")
     print(f"  모델 Hz       : {model_hz}Hz")
     print(f"  전체 프레임   : {len(df):,}")
     print(f"  자동 레이블   : {len(df)-unlabeled:,} ({(len(df)-unlabeled)/len(df)*100:.1f}%)")
-    print(f"  미분류        : {unlabeled:,} ({unlabeled/len(df)*100:.1f}%)")
+    print(f"  Unlabeled        : {unlabeled:,} ({unlabeled/len(df)*100:.1f}%)")
     print(f"\n클래스별 분포:")
     for cls, cnt in df['pred_label'].value_counts().items():
         print(f"  {cls:12s}: {cnt:>6,}개 ({cnt/len(df)*100:.1f}%)")
