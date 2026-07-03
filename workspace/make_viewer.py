@@ -1871,9 +1871,13 @@ function applyEdit(){{
   const s0=tcToMs(startI.value),e0=tcToMs(endI.value),newLabel=labelS.value;
   if(s0===null||e0===null){{setFeedback('시간 형식 오류: 00:00:00.000','var(--red)');startI.classList.add('error');endI.classList.add('error');return;}}
   startI.classList.remove('error');endI.classList.remove('error');
-  const startMs=snapMs(s0,'floor'),endMs=snapMs(e0,'ceil');
+  const startMs=snapMs(s0,'floor');let endMs=snapMs(e0,'ceil');
   if(startMs>=endMs){{setFeedback('종료시간 > 시작시간 이어야 합니다','var(--red)');return;}}
-  if(endMs>TOTAL_MS){{setFeedback('종료시간이 전체 길이를 초과합니다','var(--red)');return;}}
+  // 입력한 종료시간이 전체 길이를 명확히(1스텝 이상) 초과할 때만 거부.
+  if(e0>TOTAL_MS+IMU_STEP){{setFeedback('종료시간이 전체 길이를 초과합니다','var(--red)');return;}}
+  // 10ms 올림 스냅이 전체 길이를 살짝 넘는 경우(주로 마지막 구간, 타임스탬프가 10ms 격자와
+  // 어긋날 때 발생)엔 거부하지 말고 전체 길이로 맞춘다.
+  if(endMs>TOTAL_MS) endMs=TOTAL_MS;
   history.push(JSON.parse(JSON.stringify(tier2Segs)));if(history.length>50)history.shift();
   const result=[];let inserted=false;
   for(const s of tier2Segs){{
@@ -1885,7 +1889,7 @@ function applyEdit(){{
   }}
   if(!inserted)result.push(makeNewSeg(startMs,endMs,newLabel));
   tier2Segs=result.sort((a,b)=>a.start_ms-b.start_ms);
-  ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=startMs&&r.time_ms<endMs)r.pred_label=newLabel;}});
+  ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=startMs&&(r.time_ms<endMs||(endMs>=TOTAL_MS&&r.time_ms<=endMs)))r.pred_label=newLabel;}});
   const snapped=s0!==startMs||e0!==endMs;
   setFeedback(`✓ ${{newLabel}} | ${{msToTC(startMs)}} ~ ${{msToTC(endMs)}}${{snapped?' [스냅]':''}}`,COLORS[newLabel]||'var(--green)');
   renderAll();renderSegList();updateModCounter();
