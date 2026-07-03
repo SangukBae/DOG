@@ -1668,7 +1668,14 @@ function updatePlayheads(){{
   updateAudioDetection();
   tcDisp.textContent=msToTC(Math.round(vid.currentTime*1000));
   const ms=Math.round(vid.currentTime*1000);
-  const idx=tier2Segs.findIndex(s=>ms>=s.start_ms&&ms<=s.end_ms);
+  let idx=tier2Segs.findIndex(s=>ms>=s.start_ms&&ms<=s.end_ms);
+  // 목록에서 방금 선택한 구간은, 재생위치가 그 구간 근처(시작 직전 프레임 스냅 포함)에
+  // 머무는 동안 파란색을 유지한다. 구간을 벗어나면 고정 해제 후 실제 재생위치 기준으로 복귀.
+  if(_stickySegIdx>=0){{
+    const ss=tier2Segs[_stickySegIdx];
+    if(ss && ms<=ss.end_ms && ms>=ss.start_ms-150) idx=_stickySegIdx;
+    else _stickySegIdx=-1;
+  }}
   if(idx!==lastSegIdx){{
     document.getElementById('srow_'+lastSegIdx)?.classList.remove('playing');
     lastSegIdx=idx;
@@ -1793,6 +1800,7 @@ function addTooltip(el,s){{
 function posTooltip(e){{tooltip.style.left=(e.clientX+12)+'px';tooltip.style.top=(e.clientY-10)+'px';}}
 
 // ── 구간 선택 ────────────────────────────────────────────────────────────
+let _stickySegIdx=-1;   // 목록에서 방금 선택한 구간(파란색 고정용). 재생위치가 벗어나면 해제
 function selectSeg(idx){{
   if(selectedIdx>=0)document.getElementById('srow_'+selectedIdx)?.classList.remove('active');
   selectedIdx=idx;
@@ -1801,6 +1809,17 @@ function selectSeg(idx){{
   setFeedback(`선택: ${{s.label}} | ${{msToTC(s.start_ms)}} ~ ${{msToTC(s.end_ms)}} | conf:${{s.conf}}`,'#888');
   document.getElementById('srow_'+idx)?.classList.add('active');
   document.getElementById('srow_'+idx)?.scrollIntoView({{block:'nearest'}});
+  // ── 선택 구간을 즉시 '재생중(파란색)' 구간으로 지정 ──────────────────────
+  // 영상 seek은 프레임 단위로 스냅돼 실제 재생위치가 start_ms보다 살짝 앞설 수 있고,
+  // 그러면 재생위치 기준 매칭이 '이전 구간'을 파란색으로 잡는다. 선택 구간을 즉시 파란색으로
+  // 지정하고 _stickySegIdx로 잠시 고정해 이전 구간으로 밀리지 않게 한다.
+  if(lastSegIdx>=0 && lastSegIdx!==idx) document.getElementById('srow_'+lastSegIdx)?.classList.remove('playing');
+  lastSegIdx=idx; _stickySegIdx=idx;
+  document.getElementById('srow_'+idx)?.classList.add('playing');
+  document.getElementById('nowLabel').textContent=s.label;
+  document.getElementById('nowLabel').style.color='#fff';
+  document.getElementById('nowConf').textContent='conf: '+s.conf.toFixed(3)+(s.low_conf?' ⚠':'');
+  document.getElementById('nowLabelBar').style.background=COLORS[s.label]||'#161616';
   renderTier2();
   drawAudioTrain();   // 선택 구간 범위를 오디오 영역에 회색 직사각형으로 즉시 표시
   drawLabelTrain();   // 라벨 트랙도 즉시 갱신 (수정/선택 반영)
