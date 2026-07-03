@@ -27,6 +27,10 @@ CALIB_CONF = 0.80
 # 알고리즘이 덮어쓰기 위한 최소 확신도 / 윈도우 동의 비율
 OVERRIDE_CONF = 0.60
 OVERRIDE_AGREE = 0.50
+# 단일 자세 지배 가드: DL 고신뢰 자세(Lying/Standing) 중 소수 자세가 이 비율보다
+# 적으면(사실상 한 자세뿐이면) 자세 군집화가 단일 자세를 억지로 둘로 갈라 절반을
+# 반대 자세로 뒤집는 것을 막기 위해 자세 보정을 기권한다.
+POSTURE_MIN_MINORITY = 0.05
 
 
 def _valley_2means(x, iters=30):
@@ -145,7 +149,15 @@ def _calibrate(feats, dl_label, dl_conf, swap_posture=False, verbose=True):
     cal['c_standing'] = None
     orient = np.array([f['orient'] for f in feats])
     smask = motion < cal['static_th']
-    if smask.sum() >= 20:
+    # 단일 자세 지배 가드: DL 고신뢰 자세가 사실상 한 자세뿐이면 자세 보정 기권.
+    nL_hi = int(((lab == 'Lying') & hi).sum())
+    nS_hi = int(((lab == 'Standing') & hi).sum())
+    posture_minor = min(nL_hi, nS_hi) / max(nL_hi + nS_hi, 1)
+    if posture_minor < POSTURE_MIN_MINORITY:
+        if verbose:
+            print(f"  [algo] DL 자세가 단일 지배(소수자세 {posture_minor*100:.1f}%"
+                  f" < {POSTURE_MIN_MINORITY*100:.0f}%) → 자세 보정 기권(DL 유지)")
+    elif smask.sum() >= 20:
         O = orient[smask]
         c0, c1, assign = _kmeans2_unit(O)
         sep = 1.0 - float(np.dot(c0, c1))           # 두 자세 분리도
