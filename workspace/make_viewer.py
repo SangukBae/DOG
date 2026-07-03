@@ -1907,7 +1907,7 @@ function splitAtCurrent(){{
   tier2Segs.splice(idx,1,left,right);
   ID_ROWS[currentId].forEach(r=>{{if(r.time_ms>=curMs&&r.time_ms<s.end_ms)r.pred_label=right.label;}});
   renderAll();renderSegList();updateModCounter();
-  markAutosaveDirty();
+  markAutosaveDirty(true);
   setFeedback(`✂ 분할 완료: ${{msToTC(curMs)}}에서 나눔`,COLORS[s.label]||'var(--green)');
   selectSeg(idx);
 }}
@@ -1929,7 +1929,7 @@ function mergeSelected(){{
     conf:Math.round(avgConf*1000)/1000,low_conf:run.some(x=>x.low_conf)}};
   tier2Segs.splice(lo,run.length,merged);
   renderAll();renderSegList();updateModCounter();
-  markAutosaveDirty();
+  markAutosaveDirty(true);
   setFeedback(`⊕ ${{run.length}}개 구간 병합 완료: ${{label}} ${{msToTC(first.start_ms)}}~${{msToTC(last.end_ms)}}`,COLORS[label]||'var(--green)');
   selectSeg(lo);
 }}
@@ -2189,6 +2189,7 @@ let _autosaveTimer = null;
 let _autosaveDirty = false;
 let _autosaveInFlight = false;
 let _autosaveLastCsv = null;
+let _autosaveForce = false;   // 병합/분할 등 행 라벨은 그대로지만 저장이 필요한 구조 편집용
 
 function setAutosaveStatus(text, color='var(--text3)') {{
   const el = document.getElementById('autosaveStatus');
@@ -2197,14 +2198,16 @@ function setAutosaveStatus(text, color='var(--text3)') {{
   el.style.color = color;
 }}
 
-function markAutosaveDirty() {{
+function markAutosaveDirty(force=false) {{
   _autosaveDirty = true;
+  if (force) _autosaveForce = true;
   setAutosaveStatus('변경됨 · 저장 대기', 'var(--yellow)');
   if (_autosaveTimer) clearTimeout(_autosaveTimer);
-  _autosaveTimer = setTimeout(() => autoSave(), AUTOSAVE_DEBOUNCE_MS);
+  _autosaveTimer = setTimeout(() => autoSave(_autosaveForce), AUTOSAVE_DEBOUNCE_MS);
 }}
 
 function autoSave(force=false) {{
+  _autosaveForce = false;   // force 값은 인자로 전달됨 — 소비 후 초기화
   if (_autosaveTimer) {{
     clearTimeout(_autosaveTimer);
     _autosaveTimer = null;
