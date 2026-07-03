@@ -32,6 +32,14 @@ OVERRIDE_AGREE = 0.50
 # 반대 자세로 뒤집는 것을 막기 위해 자세 보정을 기권한다.
 POSTURE_MIN_MINORITY = 0.05
 
+# 먹이 관련(Eating/Drinking) 자세 교정 옵션.
+# 목걸이 IMU는 '서서/누워서 먹기'와 '그냥 서있기/눕기'를 방향으로 구분하지 못해,
+# 모델이 특정 목걸이 방향을 Eating으로 오인하는 문제가 있다. 이 플래그를 켜면
+# 알고리즘이 확신하는 자세(Lying/Standing)로 Eating/Drinking도 덮어쓴다.
+# ⚠️ 주의: 실제로 먹은 구간도 자세로 덮여 사라진다(의도된 절충 — 사용자 선택).
+OVERRIDE_FEEDING_POSTURE = True
+FEEDING_LABELS = {'Eating', 'Drinking'}
+
 
 def _valley_2means(x, iters=30):
     """1D 2-means로 분포를 두 모드(rest/active)로 나눈 경계값.
@@ -299,6 +307,8 @@ def algorithmic_correct(df, hz, win_sec=1.0, stride_sec=0.5, verbose=True,
     out = dl_lab.copy()
     changed = 0
     per_class = {c: 0 for c in DOMAIN}
+    # 자세 교정을 허용할 DL 원본 라벨 집합 (옵션에 따라 먹이 라벨 포함)
+    posture_overridable = POSTURE_OVERRIDABLE | (FEEDING_LABELS if OVERRIDE_FEEDING_POSTURE else set())
     for i in range(n):
         if cover[i] == 0 or vote_cnt[i].sum() == 0:
             continue
@@ -310,7 +320,7 @@ def algorithmic_correct(df, hz, win_sec=1.0, stride_sec=0.5, verbose=True,
             # 자세 교정(Lying/Standing)은 DL이 '자세 or Unlabeled'로 본 프레임에만.
             # DL이 확신한 미세행동(Eating/Drinking/Sniffing 등)은 보존 → 머리 숙인
             # 정적 행동이 자세로 잘못 덮이는 것 방지.
-            if new in ('Lying', 'Standing') and out[i] not in POSTURE_OVERRIDABLE:
+            if new in ('Lying', 'Standing') and out[i] not in posture_overridable:
                 continue
             if out[i] != new:
                 changed += 1
