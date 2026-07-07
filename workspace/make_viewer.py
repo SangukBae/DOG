@@ -1012,10 +1012,10 @@ let zoomIdx    = 6;
 let zoomLevel  = 5;
 
 const ZOOM_LEVELS = [0.5,0.75,1,1.5,2,3,5,8,12,16,24,32];
-// 타임라인 폭 기준(px). 로드 시점의 타임라인 영역 폭으로 1회 고정한다.
-// 폭 = 배율 × baseW 로 두면 원래 밀도를 유지하면서, 창을 넓혀도 폭이
-// 재계산되지 않아 더 넓은 시간 범위가 보인다.
-let baseW = 0;
+// 타임라인 기준 폭(px). 창 크기와 무관한 고정값에 배율을 곱해 폭을 정한다.
+// → 어떤 창에서 열든 시작 밀도가 동일하고, 창을 넓히면 더 넓은 시간범위가 보인다.
+//   (값을 키우면 칸이 넓어지고, 줄이면 촘촘해진다)
+const BASE_W = 1600;
 
 // ── sentiment 폰트 색상 ───────────────────────────────────────────────────
 const G_POSITIVE = new Set(['Standing','Lying','Running','Walking','Sniffing','Eating','Drinking','Barking','Shaking']);
@@ -1630,11 +1630,9 @@ function resetZoom(){{zoomIdx=2;zoomLevel=1;document.getElementById('zoomLabel')
 function applyZoom(){{
   const inner=document.getElementById('tlInner');
   const scroll=document.getElementById('tlScroll');
-  // 기준 폭(baseW)을 최초 1회, 로드 시점의 타임라인 영역 폭으로 고정한다.
-  // 폭 = 배율 × baseW → 처음 모습은 원래(배율×화면폭)와 동일하지만, 창을 넓혀도
-  // baseW가 바뀌지 않으므로 폭이 재계산되지 않고 더 넓은 시간 범위가 드러난다.
-  if(!baseW){{ baseW = scroll.offsetWidth || inner.parentElement.offsetWidth || 1000; }}
-  inner.style.width=Math.round(zoomLevel*baseW)+'px';
+  // 폭 = 배율 × 고정 기준폭(BASE_W). 창 크기와 무관하므로 시작 밀도가 항상 같고,
+  // 창을 넓혀도 폭이 그대로라 더 넓은 시간 범위가 드러난다.
+  inner.style.width=Math.round(zoomLevel*BASE_W)+'px';
   // 하한 100%를 두지 않는다(창 폭에 맞춰 늘어나지 않도록).
   inner.style.minWidth='0';
   renderRuler();renderAll();
