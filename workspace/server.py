@@ -272,8 +272,10 @@ def get_file_list():
 
 
 def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: Path = None,
-                 threshold: float = 0.7, audio_db_margin: float = 12, out_subdir: str = ''):
-    """백그라운드에서 파이프라인 실행 (out_subdir: outputs 하위폴더 → 입력 구조 유지)"""
+                 threshold: float = 0.7, audio_db_margin: float = 12, out_subdir: str = '',
+                 apply_barking: bool = True):
+    """백그라운드에서 파이프라인 실행 (out_subdir: outputs 하위폴더 → 입력 구조 유지)
+    apply_barking=False면 후처리 단계의 오디오 Barking 덮어쓰기를 건너뛴다."""
     try:
         out_subdir = safe_rel(out_subdir) or infer_output_subdir(sensor_path)
         base       = sensor_path.stem
@@ -300,17 +302,21 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
                 return
             label_out = out_dir / f'{base}_labeled.csv'
 
-            # 2단계: 필터링(flicker 정리) + 소리 큰 구간 Barking 처리
-            pipeline_status[job_id]['message'] = '[2/3] 필터링 + 소리 처리 중...'
-            r_pp = subprocess.run([
+            # 2단계: 필터링(flicker 정리) + (옵션) 소리 큰 구간 Barking 처리
+            pipeline_status[job_id]['message'] = (
+                '[2/3] 필터링 + 소리 처리 중...' if apply_barking else '[2/3] 필터링 중...')
+            pp_cmd = [
                 'python', '/workspace/postprocess.py',
                 '--input',         str(label_out),
                 '--min-duration',   '2.0',
                 '--smooth-window',  '1.0',
                 '--protect-conf',   '0.85',
-                '--video',          str(video_path),
-                '--audio-db-margin', str(audio_db_margin),
-            ], capture_output=True, text=True)
+            ]
+            # 체크박스 ON일 때만 --video/--audio-db-margin을 넘겨 Barking 덮어쓰기를 켠다.
+            # (postprocess는 video가 없으면 Barking 덮어쓰기를 건너뛴다)
+            if apply_barking:
+                pp_cmd += ['--video', str(video_path), '--audio-db-margin', str(audio_db_margin)]
+            r_pp = subprocess.run(pp_cmd, capture_output=True, text=True)
             smoothed_out = out_dir / f'{base}_labeled_smoothed.csv'
             if r_pp.returncode == 0 and smoothed_out.exists():
                 label_out = smoothed_out          # 후처리 결과를 뷰어 입력으로 사용
@@ -439,7 +445,12 @@ body{{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#eee;min-hei
       <input class="file-input" type="number" id="thresholdInput" value="0.7" min="0" max="1" step="0.05">
     </div>
     <div class="file-label" style="margin-bottom:14px;max-width:360px">
-      <span>소리 임계값 — 배경 소음 +<b id="dbMarginVal">12</b> dB (클수록 큰 소리만 Barking)</span>
+      <span style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="applyBarking" checked
+               style="width:auto;accent-color:#378ADD;cursor:pointer;flex:none"
+               onchange="document.getElementById('audioDbMargin').disabled=!this.checked;this.closest('.file-label').style.opacity=this.checked?'1':'0.55'">
+        소리 임계값 — 배경 소음 +<b id="dbMarginVal">12</b> dB (체크 시 큰 소리 구간을 Barking으로 덮어씀)
+      </span>
       <input type="range" id="audioDbMargin" min="6" max="24" step="1" value="12"
              style="width:100%;accent-color:#378ADD"
              oninput="document.getElementById('dbMarginVal').textContent=this.value">
@@ -462,6 +473,7 @@ async function runPipeline() {{
   const video  = document.getElementById('videoFile').files[0];
   const threshold = document.getElementById('thresholdInput').value || '0.7';
   const audioDbMargin = document.getElementById('audioDbMargin').value || '12';
+  const applyBarking = document.getElementById('applyBarking').checked;
   if (!sensor || !video) {{ alert('센서 CSV와 영상 파일을 모두 선택하세요.'); return; }}
 
   const btn  = document.getElementById('runBtn');
@@ -477,6 +489,7 @@ async function runPipeline() {{
   fd.append('video',  video);
   fd.append('threshold', threshold);
   fd.append('audio_db_margin', audioDbMargin);
+  fd.append('apply_barking', applyBarking ? 'true' : 'false');
 
   try {{
     const r    = await fetch('/upload', {{method:'POST', body:fd}});
@@ -607,6 +620,7 @@ async def upload(background_tasks: BackgroundTasks,
                  video:  UploadFile = File(...),
                  threshold: float = Form(0.7),
                  audio_db_margin: float = Form(12),
+                 apply_barking: bool = Form(True),
                  subdir: str = Form(''),
                  sensor_relpath: str = Form(''),
                  video_relpath: str = Form('')):
@@ -685,7 +699,7 @@ async def upload(background_tasks: BackgroundTasks,
         job_id = f"{safe_base(sensor.filename or 'job')}_{datetime.now().strftime('%H%M%S')}"
         _prune_status()
         pipeline_status[job_id] = {'status': 'running', 'message': '시작 중...', 'viewer_url': None}
-        background_tasks.add_task(run_pipeline, job_id, sensor_path, video_path, label_path, threshold, audio_db_margin, rel)
+        background_tasks.add_task(run_pipeline, job_id, sensor_path, video_path, label_path, threshold, audio_db_margin, rel, apply_barking)
 
         return JSONResponse({'job_id': job_id})
 
