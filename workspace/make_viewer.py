@@ -562,7 +562,7 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
 .tlc-name{{font-size:13px;font-weight:700;color:var(--text)}}
 .tlc-sub{{font-size:10px;color:var(--text2);margin-top:2px}}
 .tl-scroll{{flex:1;overflow-x:auto;overflow-y:hidden;position:relative}}
-.tl-inner{{height:100%;position:relative;display:flex;flex-direction:column;min-width:100%}}
+.tl-inner{{height:100%;position:relative;display:flex;flex-direction:column;min-width:0}}
 .ruler{{height:22px;background:#0d0d0d;border-bottom:1px solid var(--border);position:relative;flex-shrink:0;z-index:5}}
 .r-tick{{position:absolute;top:0;height:100%;border-left:1px solid #2a2a2a}}
 .r-tick-label{{position:absolute;top:3px;left:2px;font-size:9px;color:var(--text2);font-family:monospace;white-space:nowrap;background:#0d0d0d;padding:0 2px;pointer-events:none}}
@@ -1012,6 +1012,10 @@ let zoomIdx    = 6;
 let zoomLevel  = 5;
 
 const ZOOM_LEVELS = [0.5,0.75,1,1.5,2,3,5,8,12,16,24,32];
+// 타임라인 폭 기준(px). 로드 시점의 타임라인 영역 폭으로 1회 고정한다.
+// 폭 = 배율 × baseW 로 두면 원래 밀도를 유지하면서, 창을 넓혀도 폭이
+// 재계산되지 않아 더 넓은 시간 범위가 보인다.
+let baseW = 0;
 
 // ── sentiment 폰트 색상 ───────────────────────────────────────────────────
 const G_POSITIVE = new Set(['Standing','Lying','Running','Walking','Sniffing','Eating','Drinking','Barking','Shaking']);
@@ -1625,9 +1629,15 @@ function zoom(dir){{
 function resetZoom(){{zoomIdx=2;zoomLevel=1;document.getElementById('zoomLabel').textContent='1×';applyZoom();}}
 function applyZoom(){{
   const inner=document.getElementById('tlInner');
-  inner.style.minWidth=(zoomLevel*100)+'%';
-  renderRuler();renderAll();
   const scroll=document.getElementById('tlScroll');
+  // 기준 폭(baseW)을 최초 1회, 로드 시점의 타임라인 영역 폭으로 고정한다.
+  // 폭 = 배율 × baseW → 처음 모습은 원래(배율×화면폭)와 동일하지만, 창을 넓혀도
+  // baseW가 바뀌지 않으므로 폭이 재계산되지 않고 더 넓은 시간 범위가 드러난다.
+  if(!baseW){{ baseW = scroll.offsetWidth || inner.parentElement.offsetWidth || 1000; }}
+  inner.style.width=Math.round(zoomLevel*baseW)+'px';
+  // 하한 100%를 두지 않는다(창 폭에 맞춰 늘어나지 않도록).
+  inner.style.minWidth='0';
+  renderRuler();renderAll();
   const pct=vid.currentTime/TOTAL_SEC;
   scroll.scrollLeft=Math.max(0,pct*inner.offsetWidth-scroll.offsetWidth/2);
 }}
@@ -1823,6 +1833,19 @@ function selectSeg(idx){{
   renderTier2();
   drawAudioTrain();   // 선택 구간 범위를 오디오 영역에 회색 직사각형으로 즉시 표시
   drawLabelTrain();   // 라벨 트랙도 즉시 갱신 (수정/선택 반영)
+  scrollTimelineToSeg(s);  // 아래쪽 타임라인을 선택 구간 위치로 가로 스크롤
+}}
+
+// 아래쪽(하단) 타임라인을 선택 구간이 보이도록 가로 스크롤한다.
+// 재생중일 때만 자동 스크롤하는 updatePlayheads와 달리, 목록/트랙에서 구간을
+// 선택하면(정지 상태여도) 항상 해당 구간을 화면 중앙으로 가져온다.
+function scrollTimelineToSeg(s){{
+  const scroll=document.getElementById('tlScroll');
+  const inner=document.getElementById('tlInner');
+  if(!scroll||!inner)return;
+  const mid=(s.start_ms+s.end_ms)/2;
+  const midX=(mid/TOTAL_MS)*inner.offsetWidth;
+  scroll.scrollLeft=Math.max(0,midX-scroll.offsetWidth/2);
 }}
 
 // ── 구간 목록 ────────────────────────────────────────────────────────────
