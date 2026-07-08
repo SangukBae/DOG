@@ -539,6 +539,8 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
 .seg-item.low-conf-item{{border-left:3px solid var(--red)!important}}
 .seg-item.modified-item{{border-left:3px solid white!important}}
 .seg-item.playing{{background:#13283d;box-shadow:inset 0 0 0 1px var(--blue)}}
+.seg-item.range-sel{{background:#2a2438;box-shadow:inset 0 0 0 1px #9a7bd0}}
+.seg-item.range-sel.playing{{background:#26314a}}
 .seg-item.playing .seg-name::before{{content:'▶ ';color:var(--blue);font-size:9px;vertical-align:middle}}
 .seg-dot{{width:9px;height:9px;border-radius:3px;flex-shrink:0}}
 .seg-info{{flex:1;min-width:0}}
@@ -871,6 +873,10 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
           <div class="help-item">
             <div class="help-item-title"><span class="help-badge blue">⊕ 병합</span> 구간 합치기</div>
             <div class="help-item-desc">선택한 구간을 기준으로 좌우로 이어진 같은 레이블 구간을 개수 제한 없이 한 번에 합칩니다.</div>
+          </div>
+          <div class="help-item">
+            <div class="help-item-title"><span class="help-badge">▤ Shift+클릭</span> 여러 구간 한 번에</div>
+            <div class="help-item-desc">오른쪽 구간 목록에서 한 구간을 클릭한 뒤 Shift를 누른 채 다른 구간을 클릭하면 두 구간과 그 사이 구간이 모두 선택됩니다. 이 상태에서 레이블을 바꿔 '✓ 적용'하면 선택된 전체가 그 레이블로 바뀝니다.</div>
           </div>
           <div class="help-item">
             <div class="help-item-title"><span class="help-badge">줌</span> 타임라인 확대</div>
@@ -1809,7 +1815,9 @@ function posTooltip(e){{tooltip.style.left=(e.clientX+12)+'px';tooltip.style.top
 
 // ── 구간 선택 ────────────────────────────────────────────────────────────
 let _stickySegIdx=-1;   // 목록에서 방금 선택한 구간(파란색 고정용). 재생위치가 벗어나면 해제
+let rangeSel=[];        // Shift+클릭으로 선택된 구간 인덱스들(범위 다중선택). 비어있으면 단일선택
 function selectSeg(idx){{
+  rangeSel=[];          // 일반 선택은 항상 범위 다중선택을 해제
   if(selectedIdx>=0)document.getElementById('srow_'+selectedIdx)?.classList.remove('active');
   selectedIdx=idx;
   const s=tier2Segs[idx];
@@ -1846,12 +1854,26 @@ function scrollTimelineToSeg(s){{
   scroll.scrollLeft=Math.max(0,midX-scroll.offsetWidth/2);
 }}
 
+// Shift+클릭: 이전에 선택한 구간(selectedIdx)과 클릭한 구간(target) 사이의
+// 모든 구간을 범위 선택한다. 이후 '구간 레이블 수정'에서 레이블을 바꿔 적용하면
+// 범위 전체가 그 레이블로 바뀐다(applyEdit이 시작~종료 구간 전체를 대상으로 처리).
+function selectRange(target){{
+  if(selectedIdx<0){{selectSeg(target);return;}}
+  const lo=Math.min(selectedIdx,target), hi=Math.max(selectedIdx,target);
+  rangeSel=[];for(let k=lo;k<=hi;k++)rangeSel.push(k);
+  // 편집 입력칸을 범위 전체(시작구간 시작 ~ 종료구간 끝)로 채운다.
+  startI.value=msToTC(tier2Segs[lo].start_ms);
+  endI.value=msToTC(tier2Segs[hi].end_ms);
+  renderSegList();
+  setFeedback(`▤ ${{rangeSel.length}}개 구간 선택됨 — 레이블 바꿔서 '✓ 적용'하면 전체가 바뀝니다`,'#c0a0ff');
+}}
+
 // ── 구간 목록 ────────────────────────────────────────────────────────────
 function renderSegList(){{
   const wrap=document.getElementById('segListWrap');wrap.innerHTML='';
   tier2Segs.forEach((s,i)=>{{
     const item=document.createElement('div');
-    let cls='seg-item'+(s.low_conf?' low-conf-item':'')+(s.modified?' modified-item':'')+(i===selectedIdx?' active':'')+(i===lastSegIdx?' playing':'');
+    let cls='seg-item'+(s.low_conf?' low-conf-item':'')+(s.modified?' modified-item':'')+(i===selectedIdx?' active':'')+(i===lastSegIdx?' playing':'')+(rangeSel.includes(i)?' range-sel':'');
     item.className=cls;item.id='srow_'+i;
     const confColor=s.low_conf?'var(--red)':s.conf>0.85?'var(--green)':'#888';
     item.innerHTML=`
@@ -1862,7 +1884,14 @@ function renderSegList(){{
       </div>
       <div class="seg-conf-badge" style="color:${{confColor}};background:${{confColor}}22">${{s.conf.toFixed(2)}}</div>
     `;
-    item.addEventListener('click',()=>{{vid.currentTime=s.start_ms/1000;selectSeg(i);}});
+    item.addEventListener('click',(e)=>{{
+      if(e.shiftKey&&selectedIdx>=0){{
+        e.preventDefault();           // Shift+클릭 텍스트 선택 방지
+        selectRange(i);               // 범위 다중선택(영상 위치는 이동하지 않음)
+      }} else {{
+        vid.currentTime=s.start_ms/1000;selectSeg(i);
+      }}
+    }});
     wrap.appendChild(item);
   }});
 }}
@@ -1890,6 +1919,8 @@ function updateModCounter(){{
 // ── 구간 수정 ────────────────────────────────────────────────────────────
 function applyEdit(){{
   const s0=tcToMs(startI.value),e0=tcToMs(endI.value),newLabel=labelS.value;
+  rangeSel=[];   // 범위 선택 정보는 이미 시작/종료 입력칸에 반영됨 → 하이라이트 해제
+
   if(s0===null||e0===null){{setFeedback('시간 형식 오류: 00:00:00.000','var(--red)');startI.classList.add('error');endI.classList.add('error');return;}}
   startI.classList.remove('error');endI.classList.remove('error');
   const startMs=snapMs(s0,'floor');let endMs=snapMs(e0,'ceil');

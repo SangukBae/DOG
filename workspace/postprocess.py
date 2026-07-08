@@ -104,7 +104,7 @@ def merge_short(labels, conf, min_len, protect_conf):
 
 
 def apply_audio_barking(df, video_path, audio_offset_ms, threshold_db,
-                        min_dur_ms, bark_label, db_margin, bark_bridge_ms=2000):
+                        min_dur_ms, bark_label, db_margin, bark_bridge_ms=1600):
     """영상 오디오에서 '소리가 큰 구간'을 찾아 해당 센서 프레임을 Barking으로 덮어쓴다.
     영상 상대시간(ms) == 센서 시작 기준 상대시간(ms) 으로 정렬.
     audio_offset_ms: 센서가 영상보다 X ms 늦으면 +X (미세조정용).
@@ -168,7 +168,7 @@ def apply_audio_barking(df, video_path, audio_offset_ms, threshold_db,
 def postprocess(input_path, min_duration, smooth_window, protect_conf,
                 video_path=None, audio_offset_ms=0, audio_threshold_db=None,
                 audio_min_dur_ms=300, bark_label=BARK_LABEL, audio_db_margin=12,
-                bark_bridge_ms=2000,
+                bark_bridge_ms=1600,
                 use_algo=True, algo_locomotion=False, algo_swap_posture=False):
     df = pd.read_csv(input_path)
     if 'pred_label' not in df.columns or 'confidence' not in df.columns:
@@ -255,9 +255,9 @@ if __name__ == '__main__':
                    help='적응형 임계값 마진(배경+N dB). 클수록 큰 소리만 Barking (기본 12)')
     p.add_argument('--audio-min-dur', type=int, default=300,
                    help='이보다 짧은(ms) 소리 구간은 무시 (기본 300)')
-    p.add_argument('--bark-bridge-ms', type=int, default=2000,
+    p.add_argument('--bark-bridge-ms', type=int, default=1600,
                    help='가까운 짖음 병합: 이 값(ms) 이하로 떨어진 Barking 구간 사이 틈을 '
-                        'Barking으로 이어 하나의 구간으로 (0=끄기, 기본 2000)')
+                        'Barking으로 이어 하나의 구간으로 (0=끄기, 기본 1600)')
     p.add_argument('--bark-label', default=BARK_LABEL,
                    help="덮어쓸 라벨명 (기본 'Barking')")
     args = p.parse_args()

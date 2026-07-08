@@ -283,6 +283,26 @@ def run_pipeline(job_id: str, sensor_path: Path, video_path: Path, label_path: P
         out_dir.mkdir(parents=True, exist_ok=True)
         viewer_out = out_dir / f'{base}_viewer.html'
 
+        # 0단계: 영상 코덱 변환(hevc→H.264). 업로드 응답을 막지 않도록 백그라운드에서 수행한다.
+        # (make_viewer/postprocess가 H.264를 기대하므로 파이프라인 시작 전에 한 번 변환)
+        try:
+            if get_video_codec(video_path) == 'hevc':
+                pipeline_status[job_id] = {'status': 'running', 'message': '[0/3] 영상 변환 중 (H.264)...', 'viewer_url': None}
+                old_rel    = workspace_relpath(video_path)
+                orig_video = video_path
+                video_path = Path(convert_to_h264(video_path))
+                if video_path != orig_video:
+                    orig_video.unlink(missing_ok=True)     # 원본 hevc 제거(디스크 절약)
+                    new_rel = workspace_relpath(video_path)
+                    # video_map의 옛 경로(hevc) 참조를 새 경로로 갱신 → 영상 스트리밍 탐색 유지
+                    for k, v in list(video_map.items()):
+                        if v == old_rel:
+                            video_map[k] = new_rel
+                    _save_video_map()
+                print(f"hevc → H.264 변환 완료: {video_path.name}")
+        except Exception as e:
+            print('[코덱 변환 실패 → 원본 영상 사용]', e)
+
         if label_path:
             # 이미 레이블 파일 있으면 오토레이블링/후처리 스킵 (검수된 데이터 보존)
             pipeline_status[job_id] = {'status': 'running', 'message': '[1/1] 검수 뷰어 생성 중...', 'viewer_url': None}
@@ -492,8 +512,7 @@ async function runPipeline() {{
   fd.append('apply_barking', applyBarking ? 'true' : 'false');
 
   try {{
-    const r    = await fetch('/upload', {{method:'POST', body:fd}});
-    const data = await r.json();
+    const data = await uploadWithProgress(fd, prog);
     if(data.error) throw new Error(data.error);
     btn.textContent = '처리 중...';
     poll(data.job_id, prog, btn);
@@ -503,6 +522,35 @@ async function runPipeline() {{
     btn.disabled = false;
     btn.textContent = '▶ 오토 레이블링 + 뷰어 생성';
   }}
+}}
+
+// XHR 업로드 — 진행률(%)을 표시해 큰 영상을 올리는 동안 멈춘 것처럼 보이지 않게 한다.
+// (fetch는 업로드 진행률 이벤트가 없어 XHR을 사용)
+function uploadWithProgress(fd, prog) {{
+  return new Promise((resolve, reject) => {{
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload');
+    xhr.upload.onprogress = (e) => {{
+      if (e.lengthComputable) {{
+        const pct = Math.round(e.loaded / e.total * 100);
+        const mb  = (e.loaded/1048576).toFixed(0), tot = (e.total/1048576).toFixed(0);
+        prog.textContent = `파일 업로드 중... ${{pct}}% (${{mb}}/${{tot}} MB)`;
+      }} else {{
+        prog.textContent = '파일 업로드 중...';
+      }}
+    }};
+    // 바이트 전송 완료 → 서버가 파일 저장/응답을 마칠 때까지 짧게 대기
+    xhr.upload.onload = () => {{ prog.textContent = '업로드 완료 — 서버 처리 준비 중...'; }};
+    xhr.onload = () => {{
+      let data;
+      try {{ data = JSON.parse(xhr.responseText); }}
+      catch(_) {{ reject(new Error('서버 응답 오류 (HTTP ' + xhr.status + ')')); return; }}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data && data.error ? data.error : ('HTTP ' + xhr.status)));
+    }};
+    xhr.onerror = () => reject(new Error('네트워크 오류'));
+    xhr.send(fd);
+  }});
 }}
 
 function poll(job_id, prog, btn) {{
@@ -658,13 +706,8 @@ async def upload(background_tasks: BackgroundTasks,
                     {'error': '센서 CSV에 accel_x/y/z, gyro_x/y/z 컬럼이 필요합니다. '
                               f'현재: {sorted(cols)}'}, status_code=400)
 
-        # 코덱 확인 및 H.264 변환 (make_viewer와 공유 로직)
-        if get_video_codec(video_path) == 'hevc':
-            orig_video = video_path                    # 변환 후 삭제할 원본 hevc
-            video_path = Path(convert_to_h264(video_path))
-            if video_path != orig_video:
-                orig_video.unlink(missing_ok=True)     # 원본 제거(디스크 절약)
-            print(f"hevc → H.264 변환 완료: {video_path.name} (원본 삭제)")
+        # 코덱 변환(hevc→H.264)은 업로드 응답을 막지 않도록 백그라운드(run_pipeline 0단계)로 이동했다.
+        # 여기서는 원본 그대로 저장만 하고 job_id를 즉시 반환한다.
 
         # 업로드 파일이 workspace 원본 데이터와 매칭되면 outputs 저장 하위경로를 그 구조로 맞춘다.
         if not rel:
