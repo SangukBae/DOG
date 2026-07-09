@@ -103,6 +103,46 @@ def merge_short(labels, conf, min_len, protect_conf):
     return labels
 
 
+def absorb_labels(labels, conf, targets, max_len=0):
+    """지정 라벨(targets) 구간을 이웃 라벨로 흡수한다. 모델이 과예측하는
+    미세행동(예: Sniffing)을 정리하는 용도. 신뢰도와 무관하게 흡수하므로
+    (모델이 '확신하며 틀리는' 경우가 많음) merge_short의 protect_conf를 우회한다.
+    max_len>0 이면 그보다 짧은(프레임) 대상 구간만, <=0 이면 길이 무관 전부 흡수.
+    이웃 후보는 target이 아닌 쪽 중 더 긴 쪽(동률이면 평균 신뢰도 높은 쪽)."""
+    labels = labels.copy()
+    targets = set(targets)
+    if not targets:
+        return labels
+    while True:
+        segs = segments(labels)
+        if len(segs) <= 1:
+            break
+        changed = False
+        for idx, (s, e) in enumerate(segs):
+            if labels[s] not in targets:
+                continue
+            if max_len > 0 and (e - s) >= max_len:
+                continue
+            cand = []
+            if idx > 0:
+                l = segs[idx - 1]
+                if labels[l[0]] not in targets:
+                    cand.append((l[1] - l[0], conf[l[0]:l[1]].mean(), labels[l[0]]))
+            if idx < len(segs) - 1:
+                r = segs[idx + 1]
+                if labels[r[0]] not in targets:
+                    cand.append((r[1] - r[0], conf[r[0]:r[1]].mean(), labels[r[0]]))
+            if not cand:
+                continue  # 양옆이 모두 대상 라벨(드묾) → 이번 회차는 건너뜀
+            cand.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            labels[s:e] = cand[0][2]
+            changed = True
+            break  # 세그먼트 구조가 바뀌었으므로 재계산
+        if not changed:
+            break
+    return labels
+
+
 def apply_audio_barking(df, video_path, audio_offset_ms, threshold_db,
                         min_dur_ms, bark_label, db_margin, bark_bridge_ms=1600):
     """영상 오디오에서 '소리가 큰 구간'을 찾아 해당 센서 프레임을 Barking으로 덮어쓴다.
@@ -169,7 +209,8 @@ def postprocess(input_path, min_duration, smooth_window, protect_conf,
                 video_path=None, audio_offset_ms=0, audio_threshold_db=None,
                 audio_min_dur_ms=300, bark_label=BARK_LABEL, audio_db_margin=12,
                 bark_bridge_ms=1600,
-                use_algo=True, algo_locomotion=False, algo_swap_posture=False):
+                use_algo=True, algo_locomotion=False, algo_swap_posture=False,
+                absorb_targets=None, absorb_max_sec=0.0):
     df = pd.read_csv(input_path)
     if 'pred_label' not in df.columns or 'confidence' not in df.columns:
         raise ValueError("입력에 pred_label / confidence 컬럼이 필요합니다.")
@@ -200,6 +241,17 @@ def postprocess(input_path, min_duration, smooth_window, protect_conf,
     after_smooth = len(segments(smoothed))
     merged = merge_short(smoothed, conf, min_frames, protect_conf)
     after_merge = len(segments(merged))
+
+    # ── 과예측 미세행동 흡수 (옵션): Sniffing 등을 이웃 라벨로 흡수 ──
+    absorb_set = set(absorb_targets or [])
+    if absorb_set:
+        amax = int(round(absorb_max_sec * hz)) if absorb_max_sec > 0 else 0
+        n_before = int(np.isin(merged, list(absorb_set)).sum())
+        merged = absorb_labels(merged, conf, absorb_set, amax)
+        n_after = int(np.isin(merged, list(absorb_set)).sum())
+        print(f"  라벨 흡수({', '.join(sorted(absorb_set))}"
+              f"{f', <{absorb_max_sec}s' if amax else ', 전체'}): "
+              f"{n_before:,} → {n_after:,} 프레임")
 
     changed = int((merged != df['pred_label'].values).sum())
     print(f"  세그먼트(스무딩 후): {after_smooth:,}")
@@ -244,6 +296,13 @@ if __name__ == '__main__':
                    help='[실험] 알고리즘이 Walking/Running도 판정(신뢰도 낮음, 기본 off→DL)')
     p.add_argument('--swap-posture', action='store_true',
                    help='자세 군집 이름(Lying↔Standing)이 뒤집혔을 때 교정')
+    # ── 과예측 미세행동 흡수 ──
+    p.add_argument('--absorb-sniffing', action='store_true',
+                   help='Sniffing 구간을 이웃 라벨로 흡수(모델이 과예측하는 미세행동 정리). 기본 off')
+    p.add_argument('--absorb-labels', default='',
+                   help='흡수할 라벨 목록(쉼표구분). 예: "Sniffing,Running". --absorb-sniffing과 합쳐짐')
+    p.add_argument('--absorb-max-sec', type=float, default=0.0,
+                   help='이 길이(초)보다 짧은 흡수대상 구간만 흡수. 0이면 길이 무관 전부 (기본 0)')
     # ── 오디오 기반 Barking 덮어쓰기 ──
     p.add_argument('--video', default=None,
                    help='영상 경로. 지정 시 소리 큰 구간을 Barking으로 덮어씀')
@@ -261,10 +320,14 @@ if __name__ == '__main__':
     p.add_argument('--bark-label', default=BARK_LABEL,
                    help="덮어쓸 라벨명 (기본 'Barking')")
     args = p.parse_args()
+    absorb_targets = {t.strip() for t in args.absorb_labels.split(',') if t.strip()}
+    if args.absorb_sniffing:
+        absorb_targets.add('Sniffing')
     postprocess(args.input, args.min_duration, args.smooth_window, args.protect_conf,
                 video_path=args.video, audio_offset_ms=args.audio_offset,
                 audio_threshold_db=args.audio_threshold_db,
                 audio_min_dur_ms=args.audio_min_dur, bark_label=args.bark_label,
                 audio_db_margin=args.audio_db_margin, bark_bridge_ms=args.bark_bridge_ms,
                 use_algo=not args.no_algo,
-                algo_locomotion=args.algo_locomotion, algo_swap_posture=args.swap_posture)
+                algo_locomotion=args.algo_locomotion, algo_swap_posture=args.swap_posture,
+                absorb_targets=absorb_targets, absorb_max_sec=args.absorb_max_sec)

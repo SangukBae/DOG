@@ -184,20 +184,31 @@ def _calibrate(feats, dl_label, dl_conf, swap_posture=False, verbose=True):
                 return None
             m0, m1 = posture_majority(0), posture_majority(1)
 
-            # 두 군집의 DL 이름이 서로 다르면(자기일관적) DL naming 신뢰,
-            # 같으면(DL이 두 자세를 혼동) bout 길이로 폴백.
+            # ── 자세 이름 결정 + 역전 가드 ─────────────────────────────────────
+            # 중력축↔자세 매핑은 목걸이 착용 방향에 따라 세션마다 달라 고정 규칙을
+            # 못 쓴다. 실측(4세션) 결과 신뢰 가능한 단 하나의 단서는 "두 군집의 DL
+            # 다수표가 서로 다를 때"였다:
+            #   · DL이 두 군집을 서로 다른 자세로 부르면(m0≠m1) → DL naming 정확.
+            #   · DL이 두 군집을 같은 자세로 몰면(m0==m1, 또는 판정불가) → naming
+            #     단서 없음. 예전엔 정지 bout 길이로 폴백했으나, 실측에서 bout은
+            #     방향과 무관하게 자주 틀렸고(세션 2·3에서 오답) 억지 naming이 파일
+            #     전체 자세를 반대로 뒤집었다(관측: 자세 정확도 65%→27%).
+            # → 역전 가드: naming 단서가 불확실하면 자세 보정을 '기권'(DL 유지)한다.
             if m0 and m1 and m0 != m1:
-                lying_is_1 = (m1 == 'Lying'); method = 'DL다수표'
-            else:
-                lying_is_1 = run1 >= run0; method = '정지구간길이'
-            lying_is_1 ^= bool(swap_posture)
-            cal['c_lying'], cal['c_standing'] = (c1, c0) if lying_is_1 else (c0, c1)
-            if verbose:
-                print(f"  [algo] 자세 군집(무감독): sep={sep:.2f}, 이름결정={method}"
-                      f"{' (swap)' if swap_posture else ''} "
-                      f"(c0:{m0}/bout{run0}, c1:{m1}/bout{run1}) → Lying={'c1' if lying_is_1 else 'c0'}")
-                print(f"         c_lying={np.round(cal['c_lying'],2)}, "
-                      f"c_standing={np.round(cal['c_standing'],2)}")
+                lying_is_1 = (m1 == 'Lying')
+                lying_is_1 ^= bool(swap_posture)
+                cal['c_lying'], cal['c_standing'] = (c1, c0) if lying_is_1 else (c0, c1)
+                if verbose:
+                    print(f"  [algo] 자세 군집(무감독): sep={sep:.2f}, 이름결정=DL다수표"
+                          f"{' (swap)' if swap_posture else ''} "
+                          f"(c0:{m0}/bout{run0}, c1:{m1}/bout{run1}) → Lying={'c1' if lying_is_1 else 'c0'}")
+                    print(f"         c_lying={np.round(cal['c_lying'],2)}, "
+                          f"c_standing={np.round(cal['c_standing'],2)}")
+            elif verbose:
+                # c_lying/c_standing = None 유지 → _decide가 자세 판정을 기권
+                print(f"  [algo] ⚠ 자세 역전 가드: DL이 두 군집을 같은 자세로 봄"
+                      f"(c0:{m0}/bout{run0}, c1:{m1}/bout{run1}) → naming 불확실, "
+                      f"자세 보정 기권(DL 유지)")
         elif verbose:
             print(f"  [algo] 자세 군집 분리 안 됨(sep={sep:.2f}) → 자세 보정 기권(DL 유지)")
 

@@ -657,6 +657,7 @@ video{{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center
   <div class="tb-sep"></div>
   <button class="btn btn-warn" onclick="jumpLowConf()">⚠ 다음 검수필요 ({low_conf_count})</button>
   <button class="btn btn-audio" id="nextAudioBtn" onclick="jumpNextAudio()">🔊 다음 Barking 구간</button>
+  <button class="btn" onclick="mergeAllSameLabel()" title="전체 라벨에서 연속된 같은 레이블 구간을 모두 하나로 병합">⊕ 전체 병합</button>
   <button class="btn" onclick="undoLast()">↩ 되돌리기</button>
   <button class="btn btn-help" onclick="showHelp()">❓ 도움말</button>
   <div class="mod-counter">
@@ -1701,6 +1702,16 @@ function updatePlayheads(){{
       document.getElementById('nowLabelBar').style.background=COLORS[s.label]||'#161616';
       const row=document.getElementById('srow_'+idx);
       if(row){{row.classList.add('playing');row.scrollIntoView({{block:'nearest'}});}}
+      // ── 재생 중이면 '레이블 수정 가능 구간'을 현재 재생 구간으로 따라 이동 ──
+      // (정지 상태에서는 사용자가 고른 구간을 유지해 편집을 방해하지 않음)
+      // 범위 다중선택 중일 때는 선택을 덮어쓰지 않는다.
+      if(!vid.paused && rangeSel.length===0 && selectedIdx!==idx){{
+        document.getElementById('srow_'+selectedIdx)?.classList.remove('active');
+        selectedIdx=idx;
+        startI.value=msToTC(s.start_ms);endI.value=msToTC(s.end_ms);labelS.value=s.label;
+        if(row)row.classList.add('active');
+        renderTier2();  // 타임라인의 '선택' 하이라이트 갱신
+      }}
     }} else {{
       document.getElementById('nowLabel').textContent='—';
       document.getElementById('nowConf').textContent='';
@@ -2007,6 +2018,33 @@ function mergeSelected(){{
   markAutosaveDirty(true);
   setFeedback(`⊕ ${{run.length}}개 구간 병합 완료: ${{label}} ${{msToTC(first.start_ms)}}~${{msToTC(last.end_ms)}}`,COLORS[label]||'var(--green)');
   selectSeg(lo);
+}}
+
+// ── 전체 병합: 연속된 같은 레이블 구간을 전부 하나로 합친다 ────────────────────
+function mergeAllSameLabel(){{
+  if(tier2Segs.length<2){{setFeedback('병합할 구간이 없습니다.','#888');return;}}
+  history.push(JSON.parse(JSON.stringify(tier2Segs)));if(history.length>50)history.shift();
+  const out=[];let runs=0;
+  for(const s of tier2Segs){{
+    const prev=out[out.length-1];
+    if(prev && prev.label===s.label){{
+      // 이전 구간과 같은 레이블 → 병합(끝시간·인덱스 확장, 신뢰도 길이가중 평균)
+      const pd=prev.end_ms-prev.start_ms, sd=s.end_ms-s.start_ms, td=pd+sd;
+      prev.conf=Math.round((prev.conf*pd+s.conf*sd)/(td||1)*1000)/1000;
+      prev.end_ms=s.end_ms;prev.end_idx=s.end_idx;
+      prev.low_conf=prev.low_conf||s.low_conf;prev.modified=true;
+      runs++;
+    }} else {{
+      out.push({{...s}});
+    }}
+  }}
+  if(runs===0){{setFeedback('병합할 인접 동일 레이블 구간이 없습니다.','#888');history.pop();return;}}
+  const before=tier2Segs.length;
+  tier2Segs=out;
+  renderAll();renderSegList();updateModCounter();
+  markAutosaveDirty(true);
+  setFeedback(`⊕ 전체 병합 완료: ${{before}}개 → ${{out.length}}개 구간`,'var(--green)');
+  selectSeg(0);
 }}
 
 function makeNewSeg(startMs,endMs,label){{
