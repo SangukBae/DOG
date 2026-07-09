@@ -778,13 +778,18 @@ async def viewer(filename: str, sub: str = ''):
     if video is None:
         video = find_video_by_sensor_base(sensor_base)
 
-    # 센서/라벨 파일 찾기 (센서는 data roots 재귀, 라벨은 해당 하위폴더에서 reviewed > smoothed > labeled 순)
+    # 센서/라벨 파일 찾기 (센서는 data roots 재귀).
+    # 라벨은 오토라벨 원본을 base로: smoothed > labeled 순. 'Model Pred.'(원본,
+    # 읽기전용) 트랙이 이 base로 만들어지므로 reviewed를 base로 쓰면 원본 트랙까지
+    # 검수결과로 채워져 두 트랙이 동일해진다(검수 전/후 비교·'수정됨' 표시 불가).
+    # 검수결과는 autoRestore(/load)가 Reviewed 트랙에만 별도로 덮어쓴다.
+    # (오토라벨 원본이 전혀 없을 때만 최후로 reviewed를 base로 사용.)
     sensor = find_sensor_csv(sensor_base)
-    label = label_dir / f'{sensor_base}_labeled_reviewed.csv'
-    if not label.exists():
-        label = label_dir / f'{sensor_base}_labeled_smoothed.csv'
+    label = label_dir / f'{sensor_base}_labeled_smoothed.csv'
     if not label.exists():
         label = label_dir / f'{sensor_base}_labeled.csv'
+    if not label.exists():
+        label = label_dir / f'{sensor_base}_labeled_reviewed.csv'
     if not label.exists():
         raise HTTPException(404, f'레이블 파일 없음: {sensor_base}')
     if not sensor:
